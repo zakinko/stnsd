@@ -255,28 +255,45 @@ esac
 if ! command -v openssl >/dev/null 2>&1; then
 	echo "skip - no openssl(1) here to make a certificate with"
 else
-	cat > "$WORK/openssl.cnf" <<'CNFEOF'
+	# One configuration per certificate, and no -subj anywhere: LibreSSL
+	# ignores -subj when the configuration says prompt = no, so a shared
+	# file quietly gave the CA and the client the server's name and left a
+	# chain that verifies as nothing at all.
+	cat > "$WORK/server.cnf" <<'CNFEOF'
 [req]
 distinguished_name = dn
 prompt = no
 [dn]
 CN = localhost
-[server_ext]
+[ext]
 subjectAltName = DNS:localhost,IP:127.0.0.1
 basicConstraints = critical,CA:FALSE
-[ca_ext]
+CNFEOF
+	cat > "$WORK/ca.cnf" <<'CNFEOF'
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = stnsd-test-ca
+[ext]
 basicConstraints = critical,CA:TRUE
 keyUsage = critical,keyCertSign,cRLSign
+CNFEOF
+	cat > "$WORK/client.cnf" <<'CNFEOF'
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = stnsd-test-client
 CNFEOF
 fi
 # openssl(1) wants a configuration file and NetBSD's base OpenSSL ships none at
 # the path it looks in, so one is written above and named explicitly.  That
 # also avoids -addext, which is younger than some of the LibreSSL in use here.
-if [ ! -f "$WORK/openssl.cnf" ]; then
+if [ ! -f "$WORK/server.cnf" ]; then
 	:
 elif certerr=$(openssl req -x509 -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
-    -out "$WORK/server.pem" -days 1 -subj "/CN=localhost" \
-    -config "$WORK/openssl.cnf" -extensions server_ext 2>&1); then
+    -out "$WORK/server.pem" -days 1 -config "$WORK/server.cnf" -extensions ext 2>&1); then
 
 	sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf" > "$WORK/tls.conf"
 	printf '\n[tls]\ncert = "%s"\nkey  = "%s"\n' \
@@ -326,11 +343,9 @@ elif certerr=$(openssl req -x509 -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/
 	# default security level -- which it reports to the client as "unknown
 	# CA", a considerable distance from the truth.
 	openssl req -x509 -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/ca-key.pem" \
-		-out "$WORK/ca.pem" -days 1 -subj "/CN=stnsd test CA" \
-		-config "$WORK/openssl.cnf" -extensions ca_ext >/dev/null 2>&1
+		-out "$WORK/ca.pem" -days 1 -config "$WORK/ca.cnf" -extensions ext >/dev/null 2>&1
 	openssl req -new -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/client-key.pem" \
-		-out "$WORK/client.csr" -subj "/CN=client" \
-		-config "$WORK/openssl.cnf" >/dev/null 2>&1
+		-out "$WORK/client.csr" -config "$WORK/client.cnf" >/dev/null 2>&1
 	openssl x509 -req -sha256 -in "$WORK/client.csr" -CA "$WORK/ca.pem" \
 		-CAkey "$WORK/ca-key.pem" -CAcreateserial -out "$WORK/client.pem" \
 		-days 1 >/dev/null 2>&1
