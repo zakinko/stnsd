@@ -91,9 +91,14 @@ jobs:
             pkg_info -L stnsd
             /usr/pkg/sbin/stnsd -V
             test -f /usr/pkg/share/examples/rc.d/stnsd
+            # The directory has to be made before a configuration file can be
+            # created in it, and neither happens unless the package asks.
+            ls -ld /usr/pkg/etc/stns /usr/pkg/etc/stns/server
+            test -d /usr/pkg/etc/stns/server
             test -f /usr/pkg/etc/stns/server/stns.conf
             # CONF_FILES_PERMS put it there root owned and unreadable to
             # anyone else, because it is where the password hashes go.
+            ls -l /usr/pkg/etc/stns/server/stns.conf
             ls -l /usr/pkg/etc/stns/server/stns.conf | grep -q '^-rw-------'
 
             echo "== it has to actually run =="

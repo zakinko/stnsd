@@ -38,6 +38,12 @@ RCD_SCRIPT_SRC.stnsd=	# empty
 
 EGDIR=		${PREFIX}/share/examples/stnsd
 
+# ${PKG_SYSCONFDIR} is added to the install script's directory list on our
+# behalf, but with an empty owner, group and mode unless this says otherwise
+# -- and a configuration file cannot be created into a directory that was
+# never made.  The directory is ordinary; the file in it is not.
+PKG_SYSCONFDIR_PERMS=	${REAL_ROOT_USER} ${REAL_ROOT_GROUP} 0755
+
 # Root owned and unreadable to anyone else: this is the file the password
 # hashes go in.
 CONF_FILES_PERMS=	${EGDIR}/stns.conf ${PKG_SYSCONFDIR}/stns.conf \
