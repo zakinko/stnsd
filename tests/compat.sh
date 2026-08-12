@@ -245,10 +245,13 @@ echo "== TLS, from both =="
 # The same questions again over TLS.  Upstream serves it from the same two
 # configuration keys, so if the answers still match, they match on a transport
 # neither of us can fake.
-if ! openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
+if ! command -v openssl >/dev/null 2>&1; then
+	echo "skip - no openssl(1) here to make a certificate with"
+elif ! certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
     -out "$WORK/server.pem" -days 1 -subj "/CN=$HOST" \
-    -addext "subjectAltName=DNS:$HOST,IP:127.0.0.1" >/dev/null 2>&1; then
-	echo "skip - openssl(1) could not make a certificate here"
+    -addext "subjectAltName=DNS:$HOST,IP:127.0.0.1" 2>&1); then
+	fail "openssl(1) can make a certificate"
+	echo "$certerr" | sed 's/^/       /' 
 elif { cp "$SRCDIR/tests/stns.conf" "$WORK/probe.conf"
 	printf '\n[tls]\ncert = "/nonexistent.pem"\nkey = "/nonexistent-key.pem"\n' >> "$WORK/probe.conf"
 	"$STNSD" -t -c "$WORK/probe.conf" 2>&1; } | grep -q "built without TLS"; then

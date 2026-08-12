@@ -12,10 +12,11 @@
  * machines may ask than trusting a bearer token that travels with every
  * request.
  *
- * OpenSSL comes from the base system on all three platforms, so this costs no
- * package dependency.  Building with -DSTNSD_NO_TLS drops it entirely and
- * leaves a server that refuses to start if a configuration asks for TLS,
- * rather than one that quietly serves it in the clear.
+ * OpenSSL comes from the base system on NetBSD and FreeBSD; DragonFly keeps
+ * its own private, so there the package supplies it.  Building with
+ * -DSTNSD_NO_TLS drops it entirely and leaves a server that refuses to start
+ * if a configuration asks for TLS, rather than one that quietly serves it in
+ * the clear.
  */
 #include <errno.h>
 #include <limits.h>

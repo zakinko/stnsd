@@ -3,7 +3,7 @@
 A small [STNS](https://stns.jp) API server for **NetBSD**, **FreeBSD** and
 **DragonFly BSD**. It serves users, groups and their SSH public keys from a
 TOML file, over the same v1 API upstream STNS serves, in C, over HTTP or TLS,
-with nothing outside the base system behind it.
+with nothing behind it but libc and an OpenSSL.
 
 ```console
 # stnsd -t
@@ -167,8 +167,11 @@ certificates" and would otherwise require nothing at all. The certificate is
 loaded once, before the socket opens, so an unreadable one stops the daemon
 instead of producing failed handshakes nobody is watching.
 
-OpenSSL comes from the base system on all three platforms, so this costs no
-package dependency; in pkgsrc the package goes through
+OpenSSL comes from the base system on NetBSD and FreeBSD, so it costs no
+package there. DragonFly keeps its base crypto private — there are no openssl
+headers under `/usr/include` — so TLS builds against `security/openssl` from
+DPorts, which the port arranges and a hand build gets with
+`make OPENSSL_PREFIX=/usr/local`. In pkgsrc the package goes through
 `security/openssl/buildlink3.mk`, which is what makes `PREFER_PKGSRC=yes` get
 the pkgsrc one instead. `make WITHOUT_TLS=yes` builds without any of it, for a
 machine that terminates TLS elsewhere and would rather not have the library

@@ -249,11 +249,14 @@ case "$("$STNSD" -t -c "$WORK/probe.conf" 2>&1)" in
 	;;
 esac
 
-# openssl(1) is in the base system on all three platforms, but if a machine
-# somehow cannot make a certificate, say so rather than failing the suite.
-if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
+# A machine with no openssl(1) at all is a skip; one where the command fails
+# is a failure, printed in full.  Silently skipping is how a suite comes to
+# report success for tests it never ran.
+if ! command -v openssl >/dev/null 2>&1; then
+	echo "skip - no openssl(1) here to make a certificate with"
+elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
     -out "$WORK/server.pem" -days 1 -subj "/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" >/dev/null 2>&1; then
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>&1); then
 
 	sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf" > "$WORK/tls.conf"
 	printf '\n[tls]\ncert = "%s"\nkey  = "%s"\n' \
@@ -329,7 +332,8 @@ if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
 		"$(curl -s -m 5 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
 			--key "$WORK/client-key.pem" "https://localhost:$PORT/v1/users?name=alice")"
 else
-	echo "skip - openssl(1) could not make a certificate here"
+	fail "openssl(1) can make a certificate"
+	echo "$certerr" | sed 's/^/       /'
 fi
 
 echo

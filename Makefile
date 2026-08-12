@@ -18,6 +18,12 @@ RCVAR?=		stnsd
 LOCALBASE?=	/usr/local
 RCDDIR?=	${PREFIX}/etc/rc.d
 RCVAR?=		stnsd_enable
+.  if ${OS} == "DragonFly"
+# DragonFly's base crypto library is private -- there are no openssl headers
+# under /usr/include -- so TLS is built against the package instead.  Install
+# it with "pkg install openssl", or build WITHOUT_TLS.
+OPENSSL_PREFIX?=	${LOCALBASE}
+.  endif
 .else
 .error stnsd supports NetBSD, FreeBSD and DragonFly BSD only, not ${OS}
 .endif
@@ -41,8 +47,9 @@ WARNS=		-Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes \
 CPPFLAGS+=	-I${.CURDIR}/src -I${.CURDIR}/external/mit/tomlc99 \
 		-DSTNSD_CONFDIR=\"${SYSCONFDIR}\"
 
-# TLS comes from OpenSSL, which is in the base system on all three platforms,
-# so it costs no package dependency.  In pkgsrc the package includes
+# TLS comes from OpenSSL: the base system's on NetBSD and FreeBSD, the
+# package's on DragonFly, whose base crypto is private.  In pkgsrc the package
+# includes
 # security/openssl/buildlink3.mk instead of assuming that, which is what makes
 # PREFER_PKGSRC=yes get the pkgsrc one.
 #
@@ -50,10 +57,11 @@ CPPFLAGS+=	-I${.CURDIR}/src -I${.CURDIR}/external/mit/tomlc99 \
 # and would rather not have the library mapped into a process holding every
 # password hash it serves.  Such a build refuses to start on a configuration
 # that asks for TLS, rather than serving it in the clear.
-# OPENSSL_PREFIX points the build at an OpenSSL that is not the base system's
-# -- pkgsrc's, say, on a machine set up with PREFER_PKGSRC=yes, or a homebrew
-# one while developing.  Left empty, the compiler's own search path is used,
-# which is what finds the base library on all three platforms.  The pkgsrc
+# OPENSSL_PREFIX points the build at an OpenSSL that is not on the compiler's
+# own search path: the package on DragonFly, whose base crypto is private;
+# pkgsrc's, on a machine set up with PREFER_PKGSRC=yes; a homebrew one while
+# developing.  Left empty, the search path is used, which is what finds the
+# base library on NetBSD and FreeBSD.  The pkgsrc
 # package does not set it: buildlink3 puts the right one in front of the
 # compiler wrapper, and honours PREFER_PKGSRC itself.
 OPENSSL_PREFIX?=	# empty

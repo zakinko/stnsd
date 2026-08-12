@@ -28,8 +28,9 @@ jobs:
           run: |
             set -e
             uname -a
-            SRC=$(pwd)
+            openssl version
             echo "== build =="
+            SRC=$(pwd)
             make
             ls -l stnsd rc.d/stnsd
             echo "== bundled third party code =="
@@ -69,6 +70,7 @@ jobs:
           run: |
             set -e
             uname -a
+            openssl version
             echo "== build =="
             make
             echo "== bundled third party code =="
@@ -92,10 +94,13 @@ jobs:
           prepare: |
             pkg update -f
             pkg upgrade -y
-            pkg install -y curl
+            # DragonFly's base crypto is private: no openssl headers under
+            # /usr/include, so TLS builds against the package.
+            pkg install -y curl openssl
           run: |
             set -e
             uname -a
+            openssl version
             echo "== build =="
             make
             echo "== bundled third party code =="
