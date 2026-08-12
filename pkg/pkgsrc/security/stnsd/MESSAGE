@@ -1,0 +1,26 @@
+===========================================================================
+$NetBSD$
+
+To run the server:
+
+1. Write ${PKG_SYSCONFDIR}/stns.conf.  An example is installed as
+   ${PREFIX}/share/examples/stnsd/stns.conf, and the file holds password
+   hashes, so it is created root owned and mode 0600.  Keep it that way.
+
+2. Check it, then enable the daemon:
+
+	${PREFIX}/sbin/stnsd -t
+	echo stnsd=YES >> /etc/rc.conf
+	${RCD_SCRIPTS_DIR}/stnsd start
+
+   The rc.d script checks the configuration before every start and every
+   reload, and "${RCD_SCRIPTS_DIR}/stnsd reload" rereads it without
+   dropping the socket.
+
+The daemon listens on port 1104 and speaks plain HTTP.  It has no TLS of
+its own: put relayd(8) or nginx in front of it if it is to be reached
+across anything but a trusted network.
+
+Hosts resolving accounts from it need a client: security/nss_stns on
+NetBSD, STNS/libnss on Linux.
+===========================================================================

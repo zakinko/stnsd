@@ -1,0 +1,8 @@
+# Build output.
+/stnsd
+/unit_test
+/unit_test-asan
+/rc.d/stnsd
+*.o
+*.core
+*.dSYM/

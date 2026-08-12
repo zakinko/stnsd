@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The VM images and their package sets drift underneath us, so build and
+  # test on a schedule as well, not only when something here changes.
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+jobs:
+  # NetBSD is the platform this exists for, and the only one where the
+  # comparison against upstream is run: it needs a Go toolchain in the VM,
+  # and one run of it says the same thing three runs would.
+  netbsd:
+    name: NetBSD
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add curl go
+          run: |
+            set -e
+            uname -a
+            SRC=$(pwd)
+            echo "== build =="
+            make
+            ls -l stnsd rc.d/stnsd
+            echo "== bundled third party code =="
+            make external
+            echo "== packaging lists =="
+            make plist
+            echo "== unit and functional tests =="
+            make test
+
+            echo "== building upstream STNS to compare against =="
+            STNS_VERSION=2.2.17
+            curl -sL -o /tmp/stns.tar.gz \
+              https://github.com/STNS/STNS/archive/v$STNS_VERSION.tar.gz
+            tar -C /tmp -xzf /tmp/stns.tar.gz
+            cd /tmp/STNS-$STNS_VERSION/v2
+            go build -trimpath -o /tmp/stns .
+            cd "$SRC"
+            echo "== the same configuration, both servers, every answer =="
+            STNS=/tmp/stns make compat
+
+  freebsd:
+    name: FreeBSD
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y curl
+          run: |
+            set -e
+            uname -a
+            echo "== build =="
+            make
+            echo "== bundled third party code =="
+            make external
+            echo "== packaging lists =="
+            make plist
+            echo "== unit and functional tests =="
+            make test
+            echo "== unit tests under AddressSanitizer / UBSan =="
+            make asan
+
+  dragonfly:
+    name: DragonFly BSD
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        uses: vmactions/dragonflybsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg update -f
+            pkg upgrade -y
+            pkg install -y curl
+          run: |
+            set -e
+            uname -a
+            echo "== build =="
+            make
+            echo "== bundled third party code =="
+            make external
+            echo "== packaging lists =="
+            make plist
+            echo "== unit and functional tests =="
+            make test
+
+  external:
+    name: bundled code is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Asks github whether the recorded tomlc99 revision is still upstream's
+      # HEAD, which needs the network and so is not part of the build.
+      - run: sh tests/check_external.sh --upstream

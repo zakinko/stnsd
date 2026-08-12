@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+# PROVIDE: stnsd
+# REQUIRE: DAEMON
+# KEYWORD: shutdown
+#
+# The paths and the rc.conf variable are substituted in when this is built:
+# NetBSD's convention is "stnsd=YES" and FreeBSD's is "stnsd_enable=YES".
+
+. /etc/rc.subr
+
+name="stnsd"
+rcvar=@RCVAR@
+command="@PREFIX@/sbin/stnsd"
+
+: ${stnsd_conf:="@SYSCONFDIR@/stns/server/stns.conf"}
+: ${stnsd_pidfile:="@VARBASE@/run/stnsd.pid"}
+: ${stnsd_flags:=""}
+
+pidfile="${stnsd_pidfile}"
+required_files="${stnsd_conf}"
+command_args="-c ${stnsd_conf} -p ${pidfile}"
+
+# The configuration is checked before the daemon is started or reloaded, the
+# way sshd and nginx do it.  A server that comes up on half a configuration
+# serves a directory with accounts silently missing from it, and the machines
+# asking cannot tell that from an account having been removed.
+extra_commands="configtest reload"
+configtest_cmd="stnsd_configtest"
+start_precmd="stnsd_configtest"
+reload_precmd="stnsd_configtest"
+# SIGHUP rereads the file; a configuration that fails to parse is refused and
+# the running one is kept.
+sig_reload="HUP"
+
+stnsd_configtest()
+{
+	${command} -t -c ${stnsd_conf}
+}
+
+load_rc_config ${name}
+run_rc_command "$1"

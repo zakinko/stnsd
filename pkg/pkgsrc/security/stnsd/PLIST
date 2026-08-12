@@ -1,0 +1,4 @@
+@comment $NetBSD$
+sbin/stnsd
+share/examples/rc.d/stnsd
+share/examples/stnsd/stns.conf

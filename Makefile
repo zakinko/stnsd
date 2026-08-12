@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: BSD-2-Clause
+#
+# stnsd - a small STNS API server for NetBSD, FreeBSD and DragonFly BSD.
+# Written for BSD make; run it as "make".
+
+OS!=		uname -s
+
+.if ${OS} == "NetBSD"
+LOCALBASE?=	/usr/pkg
+# pkgsrc copies rc.d scripts out of share/examples/rc.d when the administrator
+# asks it to; FreeBSD ports install them ready to run.
+RCDDIR?=	${PREFIX}/share/examples/rc.d
+# NetBSD's rc.subr convention is "stnsd=YES" in rc.conf, FreeBSD's is
+# "stnsd_enable=YES".  The script is otherwise identical, so the name of the
+# variable is substituted in rather than the script being written twice.
+RCVAR?=		stnsd
+.elif ${OS} == "FreeBSD" || ${OS} == "DragonFly" || ${OS} == "MidnightBSD"
+LOCALBASE?=	/usr/local
+RCDDIR?=	${PREFIX}/etc/rc.d
+RCVAR?=		stnsd_enable
+.else
+.error stnsd supports NetBSD, FreeBSD and DragonFly BSD only, not ${OS}
+.endif
+
+PREFIX?=	${LOCALBASE}
+# pkgsrc calls this PKG_SYSCONFDIR and FreeBSD ports ETCDIR; both default to
+# ${PREFIX}/etc.
+SYSCONFDIR?=	${PREFIX}/etc
+SBINDIR?=	${PREFIX}/sbin
+EXAMPLESDIR?=	${PREFIX}/share/examples/stnsd
+VARBASE?=	/var
+
+PROG=		stnsd
+TEST=		unit_test
+
+CC?=		cc
+INSTALL?=	install
+CFLAGS?=	-O2 -pipe
+WARNS=		-Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes \
+		-Wpointer-arith -Wno-unused-parameter
+CPPFLAGS+=	-I${.CURDIR}/src -I${.CURDIR}/external/mit/tomlc99 \
+		-DSTNSD_CONFDIR=\"${SYSCONFDIR}\"
+
+CORE_OBJS=	src/config.o \
+		src/model.o \
+		src/json.o \
+		src/http.o \
+		src/log.o \
+		external/mit/tomlc99/toml.o
+
+OBJS=		${CORE_OBJS} src/main.o tests/unit_test.o
+
+all: ${PROG} rc.d/stnsd
+
+.SUFFIXES: .c .o
+
+.c.o:
+	${CC} ${CFLAGS} ${WARNS} ${CPPFLAGS} -c ${.IMPSRC} -o ${.TARGET}
+
+${PROG}: ${CORE_OBJS} src/main.o
+	${CC} -o ${.TARGET} ${CORE_OBJS} src/main.o ${LDFLAGS} ${LIBS}
+
+${TEST}: ${CORE_OBJS} tests/unit_test.o
+	${CC} -o ${.TARGET} ${CORE_OBJS} tests/unit_test.o ${LDFLAGS} ${LIBS}
+
+rc.d/stnsd: rc.d/stnsd.in
+	sed -e 's|@PREFIX@|${PREFIX}|g' \
+	    -e 's|@SYSCONFDIR@|${SYSCONFDIR}|g' \
+	    -e 's|@VARBASE@|${VARBASE}|g' \
+	    -e 's|@RCVAR@|${RCVAR}|g' \
+	    ${.CURDIR}/rc.d/stnsd.in > ${.TARGET}
+	chmod 755 ${.TARGET}
+
+# The unit tests, then the daemon put through its paces on a real socket.
+test: ${TEST} ${PROG}
+	./${TEST}
+	sh ${.CURDIR}/tests/functional.sh ./${PROG}
+
+# The test that decides whether "compatible" is true: the same configuration
+# served by this and by upstream STNS, and every answer compared.  Needs the
+# upstream binary in ${STNS} or in ${PATH}.
+compat: ${PROG}
+	sh ${.CURDIR}/tests/compat.sh ./${PROG}
+
+# Check the bundled third party code against external/MANIFEST.  Add
+# --upstream to also ask github whether the recorded revision is current.
+external:
+	sh ${.CURDIR}/tests/check_external.sh
+
+# Stage an install and diff it against the packaging lists under pkg/.
+plist: all
+	sh ${.CURDIR}/tests/check_plist.sh
+
+# The unit tests under AddressSanitizer, which is where a parser's bugs show.
+asan:
+	${CC} -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer \
+		${WARNS} ${CPPFLAGS} \
+		src/config.c src/model.c src/json.c src/http.c src/log.c \
+		external/mit/tomlc99/toml.c tests/unit_test.c \
+		${LDFLAGS} ${LIBS} -o ${TEST}-asan
+	./${TEST}-asan
+
+install: install-prog install-rcd install-conf
+
+install-prog: ${PROG}
+	${INSTALL} -d ${DESTDIR}${SBINDIR}
+	${INSTALL} -m 555 ${PROG} ${DESTDIR}${SBINDIR}/${PROG}
+
+install-rcd: rc.d/stnsd
+	${INSTALL} -d ${DESTDIR}${RCDDIR}
+	${INSTALL} -m 555 rc.d/stnsd ${DESTDIR}${RCDDIR}/stnsd
+
+# The sample lives under share/examples the way pkgsrc and ports expect; the
+# real file is left for the administrator to write, because it is the whole
+# directory and nobody should inherit somebody else's.
+install-conf:
+	${INSTALL} -d ${DESTDIR}${EXAMPLESDIR}
+	${INSTALL} -m 644 ${.CURDIR}/stns.conf.example ${DESTDIR}${EXAMPLESDIR}/stns.conf
+	${INSTALL} -d ${DESTDIR}${SYSCONFDIR}/stns/server
+
+deinstall:
+	rm -f ${DESTDIR}${SBINDIR}/${PROG}
+	rm -f ${DESTDIR}${RCDDIR}/stnsd
+	rm -f ${DESTDIR}${EXAMPLESDIR}/stns.conf
+
+clean:
+	rm -f ${OBJS} ${PROG} ${TEST} ${TEST}-asan rc.d/stnsd
+
+.PHONY: all test compat external plist asan install install-prog install-rcd \
+	install-conf deinstall clean
