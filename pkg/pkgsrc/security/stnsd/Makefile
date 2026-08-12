@@ -27,9 +27,14 @@ BUILD_DEFS+=	PKG_SYSCONFBASE VARBASE
 # security/nss_stns keeps stns/client, this keeps stns/server.
 PKG_SYSCONFSUBDIR=	stns/server
 
-# The build installs the script into share/examples/rc.d itself, which is
-# where RCD_SCRIPTS expects to find it.
-RCD_SCRIPTS=	stnsd
+# The build installs the rc.d script into share/examples/rc.d itself, paths
+# and rc.conf variable already substituted, so the automatic generation from
+# files/stnsd.sh is turned off by emptying its source.  RCD_SCRIPTS is still
+# what registers the script: it is what copies it into /etc/rc.d when
+# PKG_RCD_SCRIPTS=YES, removes it again on deinstall, and adds it to the
+# packing list -- which is why PLIST does not mention it.
+RCD_SCRIPTS=		stnsd
+RCD_SCRIPT_SRC.stnsd=	# empty
 
 EGDIR=		${PREFIX}/share/examples/stnsd
 

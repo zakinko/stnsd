@@ -21,10 +21,15 @@ case "$OS" in
 NetBSD)
 	PREFIX=/usr/pkg
 	PLIST=$SRCDIR/pkg/pkgsrc/security/stnsd/PLIST
+	# pkgsrc appends the rc.d example to the packing list itself, from
+	# RCD_SCRIPTS, so the PLIST in the tree must not list it -- while the
+	# install being staged here does install it.
+	EXTRA="share/examples/rc.d/stnsd"
 	;;
 FreeBSD|DragonFly|MidnightBSD)
 	PREFIX=/usr/local
 	PLIST=$SRCDIR/pkg/ports/security/stnsd/pkg-plist
+	EXTRA=""
 	;;
 *)
 	echo "unsupported OS: $OS" >&2
@@ -51,12 +56,14 @@ installed=$(cd "$STAGE$PREFIX" && find . -type f | sed 's|^\./||' | sort)
 # From the packing list, keep the plain file entries, plus the source side of
 # a pkg(8) "@sample src dest" line.  Directory and hook entries are the
 # package manager's business, not ours.
-expected=$(awk '
+expected=$({ awk '
 		/^@sample/  { print $2; next }   # pkg(8): "@sample src dest"
 		/^@/        { next }             # @dir, @comment, @postexec, ...
 		/^[ \t]*$/  { next }
 		{ print }
-	' "$PLIST" | sort)
+	' "$PLIST"
+	[ -n "$EXTRA" ] && echo "$EXTRA"
+	true; } | sort)
 
 echo "installed under $PREFIX:"
 echo "$installed" | sed 's/^/  /'
