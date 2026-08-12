@@ -88,7 +88,7 @@ echo stnsd=YES >> /etc/rc.conf
 /etc/rc.d/stnsd start
 ```
 
-```
+```text
 usage: stnsd [-fvV] [-c config] [-l [address:]port] [-p pidfile]
        stnsd -t [-c config]
 ```
@@ -135,10 +135,16 @@ make external   # the bundled tomlc99 still matches external/MANIFEST
 make plist      # a staged install still matches the packaging lists
 ```
 
-`make compat` needs the upstream binary in `$STNS` or `$PATH`; it skips
-politely if there is none. CI builds upstream from source on NetBSD and runs
-it there, so the comparison is made on the platform this is for rather than
-only on a developer's machine.
+`make compat` needs the upstream binary in `$STNS` or `$PATH`. It skips when
+nobody named one, and fails when somebody named one that is not there — a
+comparison that quietly declines to run and reports success is worth less than
+no comparison at all. It needs nothing else: the listings, whose order
+upstream shuffles, are compared with `awk` and `sort` rather than a JSON
+parser, so the test runs wherever the daemon does.
+
+CI builds upstream from source on NetBSD and runs the comparison there, so it
+is made on the platform this exists for rather than only on a developer's
+machine.
 
 ## Licence
 

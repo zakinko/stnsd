@@ -11,9 +11,9 @@
 # the small number of disagreements we accept on purpose are listed below and
 # nowhere else.
 #
-# Needs the upstream binary in $STNS or in $PATH as "stns", plus curl and
-# python3 (to compare listings, whose order upstream draws from a Go map and
-# therefore shuffles on every request).
+# Needs the upstream binary, in $STNS or in $PATH as "stns".  With $STNS set
+# and no such binary there, this is an error rather than a skip: a test that
+# quietly declines to run is worse than no test, because it reports success.
 #
 # usage: compat.sh [path to stnsd]
 
@@ -32,11 +32,14 @@ case "$STNSD" in
 esac
 
 if ! command -v "$STNS" >/dev/null 2>&1; then
-	echo "compat.sh: no upstream STNS binary (set \$STNS); skipping" >&2
-	exit 0
-fi
-if ! command -v python3 >/dev/null 2>&1; then
-	echo "compat.sh: python3 is needed to compare listings; skipping" >&2
+	# Somebody who named a binary meant to test against it.  Skipping there
+	# would report success for a comparison that never happened, which is
+	# how CI came to pass this file for a fortnight without running it.
+	if [ "$STNS" != stns ]; then
+		echo "compat.sh: \$STNS is $STNS, which is not there" >&2
+		exit 1
+	fi
+	echo "compat.sh: SKIPPED, no upstream STNS binary found (set \$STNS)" >&2
 	exit 0
 fi
 
@@ -143,15 +146,21 @@ same() {
 
 # same_set <description> <path>
 #
-# For the listings.  Upstream builds them by ranging over a Go map, so the
-# order is different on every request and only the set can be compared.
+# For the listings.  Upstream builds them by ranging over a Go map, so their
+# order differs on every request and only the set can be compared.
+#
+# One object per line, then sort: no JSON parser, because the one thing this
+# script must not do is need something the machine under test might not have.
+# It splits on "},{", which is sound here because the fixture holds no brace
+# inside any value -- and if one ever appears the split shows up as a
+# difference rather than as a false pass.
 same_set() {
 	desc=$1; path=$2
 
 	for port in $PORT_A $PORT_B; do
 		curl -s "http://127.0.0.1:$port$path" |
-			python3 -c 'import json,sys; print(json.dumps(sorted(json.load(sys.stdin), key=lambda e: e["id"]), sort_keys=True))' \
-			> "$WORK/$port.set" 2>/dev/null || echo PARSE_ERROR > "$WORK/$port.set"
+			awk '{ gsub(/\},\{/, "}\n{"); sub(/^\[/, ""); sub(/\]$/, ""); print }' |
+			sort > "$WORK/$port.set"
 	done
 	if cmp -s "$WORK/$PORT_A.set" "$WORK/$PORT_B.set"; then
 		ok "$desc"
