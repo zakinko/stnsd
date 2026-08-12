@@ -13,11 +13,15 @@ LICENSE=	2-clause-bsd
 USE_LANGUAGES=	c
 
 # The upstream Makefile is BSD make, so pkgsrc's bmake drives it directly.
+# It appends stns/server to SYSCONFDIR itself, which is why the base is
+# handed over rather than PKG_SYSCONFDIR.
 MAKE_FLAGS+=	PREFIX=${PREFIX}
-MAKE_FLAGS+=	LOCALBASE=${LOCALBASE}
+MAKE_FLAGS+=	LOCALBASE=${PREFIX}
 MAKE_FLAGS+=	SYSCONFDIR=${PKG_SYSCONFBASE}
 MAKE_FLAGS+=	VARBASE=${VARBASE}
 MAKE_FLAGS+=	CC=${CC:Q}
+
+BUILD_DEFS+=	PKG_SYSCONFBASE VARBASE
 
 # The server's configuration lives beside the client's, as it does upstream:
 # security/nss_stns keeps stns/client, this keeps stns/server.
@@ -28,8 +32,11 @@ PKG_SYSCONFSUBDIR=	stns/server
 RCD_SCRIPTS=	stnsd
 
 EGDIR=		${PREFIX}/share/examples/stnsd
+
+# Root owned and unreadable to anyone else: this is the file the password
+# hashes go in.
 CONF_FILES_PERMS=	${EGDIR}/stns.conf ${PKG_SYSCONFDIR}/stns.conf \
-			${ROOT_USER} ${ROOT_GROUP} 0600
+			${REAL_ROOT_USER} ${REAL_ROOT_GROUP} 0600
 
 TEST_TARGET=	test
 

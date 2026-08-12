@@ -10,7 +10,12 @@ each collection's package is thin.
 | FreeBSD ports | [`ports/security/stnsd`](ports/security/stnsd) | `security` |
 | DragonFly DPorts | the FreeBSD port, unchanged | |
 
-Three details are worth knowing.
+Four details are worth knowing.
+
+**There is no `MESSAGE` file.** pkgsrc has retired them — `pkglint` now calls
+one an error, not a style point — so a package no longer gets to lecture the
+administrator at install time. What used to go there (enable it in `rc.conf`,
+keep the configuration mode 0600) lives in the README and the runbook instead.
 
 **The rc.d script is built, not shipped twice.** `rc.d/stnsd.in` is the only
 copy; `make` substitutes the paths into it, and — because the two systems
