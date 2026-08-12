@@ -254,9 +254,29 @@ esac
 # report success for tests it never ran.
 if ! command -v openssl >/dev/null 2>&1; then
 	echo "skip - no openssl(1) here to make a certificate with"
+else
+	cat > "$WORK/openssl.cnf" <<'CNFEOF'
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = localhost
+[server_ext]
+subjectAltName = DNS:localhost,IP:127.0.0.1
+basicConstraints = critical,CA:FALSE
+[ca_ext]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+CNFEOF
+fi
+# openssl(1) wants a configuration file and NetBSD's base OpenSSL ships none at
+# the path it looks in, so one is written above and named explicitly.  That
+# also avoids -addext, which is younger than some of the LibreSSL in use here.
+if [ ! -f "$WORK/openssl.cnf" ]; then
+	:
 elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
     -out "$WORK/server.pem" -days 1 -subj "/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>&1); then
+    -config "$WORK/openssl.cnf" -extensions server_ext 2>&1); then
 
 	sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf" > "$WORK/tls.conf"
 	printf '\n[tls]\ncert = "%s"\nkey  = "%s"\n' \
@@ -302,9 +322,11 @@ elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-k
 	echo
 	echo "== TLS with client certificates =="
 	openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/ca-key.pem" -out "$WORK/ca.pem" \
-		-days 1 -subj "/CN=stnsd test CA" >/dev/null 2>&1
-	openssl req -newkey rsa:2048 -nodes -keyout "$WORK/client-key.pem" -out "$WORK/client.csr" \
-		-subj "/CN=client" >/dev/null 2>&1
+		-days 1 -subj "/CN=stnsd test CA" \
+		-config "$WORK/openssl.cnf" -extensions ca_ext >/dev/null 2>&1
+	openssl req -new -newkey rsa:2048 -nodes -keyout "$WORK/client-key.pem" \
+		-out "$WORK/client.csr" -subj "/CN=client" \
+		-config "$WORK/openssl.cnf" >/dev/null 2>&1
 	openssl x509 -req -in "$WORK/client.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca-key.pem" \
 		-CAcreateserial -out "$WORK/client.pem" -days 1 >/dev/null 2>&1
 

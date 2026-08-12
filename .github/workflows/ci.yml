@@ -95,8 +95,12 @@ jobs:
             pkg update -f
             pkg upgrade -y
             # DragonFly's base crypto is private: no openssl headers under
-            # /usr/include, so TLS builds against the package.
-            pkg install -y curl openssl
+            # /usr/include, so TLS builds against the package.  Installing it
+            # swaps out a good deal of the package set, curl included, so put
+            # curl in afterwards and check that both are still there.
+            pkg install -y openssl
+            pkg install -y curl
+            which curl openssl
           run: |
             set -e
             uname -a
