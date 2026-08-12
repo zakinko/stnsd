@@ -71,9 +71,13 @@ jobs:
 
             echo "== it has to actually run =="
             cp "$WORK"/tests/stns.conf /usr/pkg/etc/stns/server/stns.conf
+            # The package registers the script but only copies it into
+            # /etc/rc.d when PKG_RCD_SCRIPTS=YES, which is not the default,
+            # so do what an administrator does.
             cp /usr/pkg/share/examples/rc.d/stnsd /etc/rc.d/stnsd
+            echo stnsd=YES >> /etc/rc.conf
             /etc/rc.d/stnsd configtest
-            /etc/rc.d/stnsd onestart
+            /etc/rc.d/stnsd start
             i=0
             while [ $i -lt 50 ]; do
               curl -sf -o /dev/null http://127.0.0.1:11104/v1/status && break
@@ -81,11 +85,11 @@ jobs:
               sleep 0.2
             done
             curl -s 'http://127.0.0.1:11104/v1/users?name=alice'
-            /etc/rc.d/stnsd onestop
+            /etc/rc.d/stnsd stop
 
             echo "== and a broken configuration must stop it starting =="
             echo 'this is not valid toml = = =' > /usr/pkg/etc/stns/server/stns.conf
-            if /etc/rc.d/stnsd onestart; then
+            if /etc/rc.d/stnsd start; then
               echo "FAIL - started with a broken configuration" >&2
               exit 1
             fi
