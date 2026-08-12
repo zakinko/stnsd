@@ -21,6 +21,33 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The packaging cannot live inside the release tarball: each distinfo
+  # records that tarball's checksum, which is only knowable once it exists.
+  # So it is published beside it -- and this is what keeps the published copy
+  # and the tree from drifting apart, which is exactly how an install of the
+  # documented path came to fail while every other job here was green.
+  published:
+    name: published packaging matches the tree
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -e
+          V=$(sed -n 's/^DISTNAME=[[:space:]]*stnsd-//p' pkg/pkgsrc/security/stnsd/Makefile)
+          echo "packaging in the tree is for stnsd-$V"
+          url=https://github.com/zakinko/stnsd/releases/download/v$V/stnsd-$V-packaging.tar.gz
+          if ! curl -sfL -o /tmp/pkg.tar.gz "$url"; then
+            echo "FAIL - no packaging published for v$V." >&2
+            echo "       Build it from pkg/ and attach it:" >&2
+            echo "       gh release upload v$V stnsd-$V-packaging.tar.gz" >&2
+            exit 1
+          fi
+          mkdir -p /tmp/pub && tar -C /tmp/pub -xzf /tmp/pkg.tar.gz
+          diff -ru /tmp/pub/pkgsrc pkg/pkgsrc
+          diff -ru /tmp/pub/ports pkg/ports
+          echo "ok - what is published is what is in the tree"
+
   pkgsrc:
     name: pkgsrc (NetBSD)
     runs-on: ubuntu-latest

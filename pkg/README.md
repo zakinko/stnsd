@@ -44,6 +44,15 @@ Packaging workflow fetches that tarball in a VM, checks it against these
 checksums, builds the package, installs it, starts the daemon through rc.d and
 deinstalls it again.
 
+**The packaging is published beside the release, not inside it.** A distinfo
+records the checksum of the tarball it sits next to, so it cannot be part of
+that tarball — the checksum is only knowable once the tarball exists. The
+release therefore carries a second file, `stnsd-<version>-packaging.tar.gz`,
+holding both package directories, and that is what an installer downloads.
+Forgetting to attach it after a version bump breaks every documented install
+while the build stays green, so the Packaging workflow diffs the published
+copy against this tree on every push.
+
 Regenerate them after a version bump, from inside each collection's tree:
 
 ```sh
