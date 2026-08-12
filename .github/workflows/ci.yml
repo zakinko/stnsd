@@ -45,7 +45,12 @@ jobs:
               https://github.com/STNS/STNS/archive/v$STNS_VERSION.tar.gz
             tar -C /tmp -xzf /tmp/stns.tar.gz
             cd /tmp/STNS-$STNS_VERSION/v2
-            go build -trimpath -o /tmp/stns .
+            # pkgsrc's "go" is a meta package that installs no binary of its
+            # own; what it pulls in is called go126, go125 and so on.
+            GO=$(ls /usr/pkg/bin/go1[0-9][0-9] 2>/dev/null | sort | tail -1)
+            test -n "$GO" || { echo "no Go toolchain found" >&2; exit 1; }
+            "$GO" version
+            "$GO" build -trimpath -o /tmp/stns .
             cd "$SRC"
             echo "== the same configuration, both servers, every answer =="
             STNS=/tmp/stns make compat

@@ -7,7 +7,7 @@ each collection's package is thin.
 | Collection | Directory | Category |
 | --- | --- | --- |
 | pkgsrc (NetBSD) | [`pkgsrc/security/stnsd`](pkgsrc/security/stnsd) | `security` |
-| FreeBSD ports | [`freebsd/security/stnsd`](freebsd/security/stnsd) | `security` |
+| FreeBSD ports | [`ports/security/stnsd`](ports/security/stnsd) | `security` |
 | DragonFly DPorts | the FreeBSD port, unchanged | |
 
 Three details are worth knowing.
@@ -37,5 +37,5 @@ tarball:
 
 ```sh
 cd pkgsrc/security/stnsd && make makesum        # pkgsrc
-cd freebsd/security/stnsd && make makesum       # ports and DPorts
+cd ports/security/stnsd && make makesum       # ports and DPorts
 ```

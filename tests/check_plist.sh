@@ -16,7 +16,7 @@ STAGE=${STAGE:-/tmp/stnsd_stage}
 # but what was installed into it.
 SCRATCH=${SCRATCH:-/tmp/stnsd_plist}
 
-OS=$(uname -s)
+OS=${OS:-$(uname -s)}
 case "$OS" in
 NetBSD)
 	PREFIX=/usr/pkg
@@ -24,13 +24,21 @@ NetBSD)
 	;;
 FreeBSD|DragonFly|MidnightBSD)
 	PREFIX=/usr/local
-	PLIST=$SRCDIR/pkg/ports/net/nss_stns/pkg-plist
+	PLIST=$SRCDIR/pkg/ports/security/stnsd/pkg-plist
 	;;
 *)
 	echo "unsupported OS: $OS" >&2
 	exit 1
 	;;
 esac
+
+# Without this the awk below reads nothing, and a missing packing list looks
+# exactly like an empty one: every installed file "unlisted".  The pipe to
+# sort would swallow awk's exit status, so check before relying on it.
+if [ ! -f "$PLIST" ]; then
+	echo "FAIL - no packing list at $PLIST" >&2
+	exit 1
+fi
 
 rm -rf "$STAGE" "$SCRATCH"
 mkdir -p "$STAGE" "$SCRATCH"
