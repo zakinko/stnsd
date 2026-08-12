@@ -1,0 +1,5 @@
+$NetBSD$
+
+BLAKE2s (stnsd-0.1.0.tar.gz) = 5382464403621e0fc1ef3f94f2dc48488a587392ba90d85c2c9a0da298c0de51
+SHA512 (stnsd-0.1.0.tar.gz) = 016629b923ec6e8bb5e078e2deb2127337aaa69460d23c37aa650ce0db4b07031a696cbdf297d362248356048b5febbc9d741eac7b08e2d7f037fd358163e0d5
+Size (stnsd-0.1.0.tar.gz) = 51736 bytes

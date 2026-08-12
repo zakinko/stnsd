@@ -1,0 +1,148 @@
+name: Packaging
+
+# Builds the pkgsrc package and the FreeBSD port for real, from the release
+# tarball on github, rather than only checking the packing lists against a
+# staged install the way the main CI does.  It needs a whole package
+# collection in each VM, so it runs on its own schedule: when the packaging
+# files change, and on request.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'pkg/**'
+      - 'Makefile'
+      - '.github/workflows/packaging.yml'
+  pull_request:
+    paths:
+      - 'pkg/**'
+      - 'Makefile'
+      - '.github/workflows/packaging.yml'
+  workflow_dispatch:
+
+jobs:
+  pkgsrc:
+    name: pkgsrc (NetBSD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and install the package
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add curl digest
+          run: |
+            set -e
+            WORK=$(pwd)
+
+            echo "== fetching pkgsrc =="
+            ftp -o /tmp/pkgsrc.tar.gz \
+              https://cdn.NetBSD.org/pub/pkgsrc/current/pkgsrc.tar.gz
+            tar -C /usr -xzf /tmp/pkgsrc.tar.gz
+            rm -f /tmp/pkgsrc.tar.gz
+
+            # pkglint is pkgsrc's own correctness check: Makefile ordering and
+            # style, PLIST, DESCR length, category, licence spelling.  It is
+            # the part of a pkgsrc review that can be automated.
+            /usr/sbin/pkg_add pkglint || true
+
+            echo "== dropping the package in =="
+            mkdir -p /usr/pkgsrc/security/stnsd
+            cp -R "$WORK"/pkg/pkgsrc/security/stnsd/. /usr/pkgsrc/security/stnsd/
+            cd /usr/pkgsrc/security/stnsd
+            pkglint .
+
+            echo "== build, package, install =="
+            # The distfile is fetched from github and checked against the
+            # distinfo in the tree, so this also says whether the checksums
+            # we shipped are the ones the release actually has.
+            make DEPENDS_TARGET=bin-install package
+            make install
+
+            echo "== what landed =="
+            pkg_info -L stnsd
+            /usr/pkg/sbin/stnsd -V
+            test -f /usr/pkg/share/examples/rc.d/stnsd
+            test -f /usr/pkg/etc/stns/server/stns.conf
+            # CONF_FILES_PERMS put it there root owned and unreadable to
+            # anyone else, because it is where the password hashes go.
+            ls -l /usr/pkg/etc/stns/server/stns.conf | grep -q '^-rw-------'
+
+            echo "== it has to actually run =="
+            cp "$WORK"/tests/stns.conf /usr/pkg/etc/stns/server/stns.conf
+            cp /usr/pkg/share/examples/rc.d/stnsd /etc/rc.d/stnsd
+            /etc/rc.d/stnsd configtest
+            /etc/rc.d/stnsd onestart
+            i=0
+            while [ $i -lt 50 ]; do
+              curl -sf -o /dev/null http://127.0.0.1:11104/v1/status && break
+              i=$((i + 1))
+              sleep 0.2
+            done
+            curl -s 'http://127.0.0.1:11104/v1/users?name=alice'
+            /etc/rc.d/stnsd onestop
+
+            echo "== and a broken configuration must stop it starting =="
+            echo 'this is not valid toml = = =' > /usr/pkg/etc/stns/server/stns.conf
+            if /etc/rc.d/stnsd onestart; then
+              echo "FAIL - started with a broken configuration" >&2
+              exit 1
+            fi
+
+            echo "== deinstall =="
+            cd /usr/pkgsrc/security/stnsd
+            make deinstall
+            test ! -f /usr/pkg/sbin/stnsd
+
+  ports:
+    name: ports (FreeBSD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and install the port
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y git curl
+          run: |
+            set -e
+            WORK=$(pwd)
+
+            echo "== fetching the ports tree =="
+            git clone --depth 1 --single-branch \
+              https://git.FreeBSD.org/ports.git /usr/ports
+
+            echo "== dropping the port in =="
+            mkdir -p /usr/ports/security/stnsd
+            cp -R "$WORK"/pkg/ports/security/stnsd/. /usr/ports/security/stnsd/
+            cd /usr/ports/security/stnsd
+
+            echo "== stage and check the packing list =="
+            make stage
+            make check-plist
+            echo "== package and install =="
+            make package
+            make install
+
+            echo "== what landed =="
+            pkg info -l stnsd
+            /usr/local/sbin/stnsd -V
+            test -f /usr/local/etc/rc.d/stnsd
+
+            echo "== it has to actually run =="
+            cp "$WORK"/tests/stns.conf /usr/local/etc/stns/server/stns.conf
+            service stnsd onestart
+            i=0
+            while [ $i -lt 50 ]; do
+              curl -sf -o /dev/null http://127.0.0.1:11104/v1/status && break
+              i=$((i + 1))
+              sleep 0.2
+            done
+            curl -s 'http://127.0.0.1:11104/v1/users?name=alice'
+            service stnsd onestop
+
+            echo "== deinstall =="
+            make deinstall
+            test ! -f /usr/local/sbin/stnsd

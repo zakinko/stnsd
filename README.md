@@ -66,7 +66,31 @@ and TLS. The TOML backend is the one this is for.
 | TLS | yes | no, put relayd(8) in front |
 | architectures | where Go runs | where NetBSD runs |
 
-## Building and installing
+## Installing
+
+### From pkgsrc or ports
+
+Neither collection carries this yet, so the package is dropped into a tree you
+already have. Both fetch the release tarball from github and check it against
+the `distinfo` in [`pkg/`](pkg).
+
+```sh
+# NetBSD, pkgsrc
+cp -R pkg/pkgsrc/security/stnsd /usr/pkgsrc/security/stnsd
+cd /usr/pkgsrc/security/stnsd && make install
+
+# FreeBSD or DragonFly, ports
+cp -R pkg/ports/security/stnsd /usr/ports/security/stnsd
+cd /usr/ports/security/stnsd && make install
+```
+
+That gives you `sbin/stnsd`, an rc.d script and a sample configuration
+installed root-owned and mode 0600 at `${PKG_SYSCONFDIR}/stns/server/stns.conf`
+— it is where password hashes go. CI builds and installs both packages in a VM
+on every change to `pkg/`, then starts the daemon through rc.d, so this path is
+tested rather than described.
+
+### From the source tree
 
 ```sh
 make
@@ -74,8 +98,9 @@ make test          # unit tests, then the daemon on a real socket
 make install       # PREFIX defaults to /usr/pkg on NetBSD, /usr/local elsewhere
 ```
 
-There is nothing to install beyond the binary, an rc.d script and a sample
-configuration. `pkg/` has a pkgsrc package and a FreeBSD port.
+There is nothing to install beyond the binary, the rc.d script and the sample
+configuration, and nothing to install them *with*: no libraries, no toolchain
+but cc.
 
 ## Running it
 
