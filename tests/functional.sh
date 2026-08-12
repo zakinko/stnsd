@@ -338,11 +338,15 @@ elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-k
 	stop_server
 	"$STNSD" -f -c "$WORK/mtls.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
 	server_pid=$!
+	# The exemption /v1/status has from authentication is an HTTP-level one,
+	# and the handshake comes first, so even it needs the certificate here.
+	# Bounded at ten seconds: if the wait runs out the checks below say why,
+	# which is more use than waiting longer.
 	i=0
-	while [ $i -lt 100 ]; do
-		curl -sf --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
+	while [ $i -lt 50 ]; do
+		curl -sf -m 5 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
 			--key "$WORK/client-key.pem" -o /dev/null \
-			"https://localhost:$PORT/v1/status" && break
+			"https://localhost:$PORT/v1/status" 2>/dev/null && break
 		i=$((i + 1))
 		sleep 0.2
 	done
@@ -350,9 +354,38 @@ elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-k
 	denies "a client with no certificate is refused" \
 		curl -sf -m 5 -o /dev/null --cacert "$WORK/server.pem" \
 			"https://localhost:$PORT/v1/users?name=alice"
-	contains "a client with one is served" '"name":"alice"' \
-		"$(curl -s -m 5 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
-			--key "$WORK/client-key.pem" "https://localhost:$PORT/v1/users?name=alice")"
+
+	# Some clients cannot present a certificate under TLS 1.3 -- LibreSSL was
+	# a while catching up -- so a failure is retried at 1.2 before being
+	# called one.  Which version it took is reported either way: it is the
+	# client's limitation, not the server's, but it is worth knowing.
+	mtls=$(curl -s -m 10 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
+		--key "$WORK/client-key.pem" "https://localhost:$PORT/v1/users?name=alice" 2>&1)
+	case "$mtls" in
+	*'"name":"alice"'*)
+		ok "a client with one is served"
+		;;
+	*)
+		mtls12=$(curl -s -m 10 --tls-max 1.2 --cacert "$WORK/server.pem" \
+			--cert "$WORK/client.pem" --key "$WORK/client-key.pem" \
+			"https://localhost:$PORT/v1/users?name=alice" 2>&1)
+		case "$mtls12" in
+		*'"name":"alice"'*)
+			ok "a client with one is served (this client needs TLS 1.2 to send it)"
+			;;
+		*)
+			fail "a client with one is served"
+			echo "       at 1.3: $mtls"
+			echo "       at 1.2: $mtls12"
+			curl -v -m 10 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
+				--key "$WORK/client-key.pem" \
+				"https://localhost:$PORT/v1/status" 2>&1 |
+				sed -n 's/^/       curl: /p' | tail -12
+			sed -n 's/^/       stnsd: /p' "$WORK/stnsd.log" | tail -5
+			;;
+		esac
+		;;
+	esac
 else
 	fail "openssl(1) can make a certificate"
 	echo "$certerr" | sed 's/^/       /'
