@@ -341,7 +341,7 @@ elif certerr=$(openssl req -x509 -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/
 		"$("$STNSD" -t -c "$WORK/mtls.conf" 2>&1 || true)"
 
 	stop_server
-	"$STNSD" -f -c "$WORK/mtls.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+	"$STNSD" -f -v -c "$WORK/mtls.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
 	server_pid=$!
 	# The exemption /v1/status has from authentication is an HTTP-level one,
 	# and the handshake comes first, so even it needs the certificate here.
@@ -372,8 +372,17 @@ elif certerr=$(openssl req -x509 -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/
 		echo "       got: $mtls"
 		curl -v -m 10 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
 			--key "$WORK/client-key.pem" "https://localhost:$PORT/v1/status" 2>&1 |
-			sed -n 's/^/       curl: /p' | tail -12
-		sed -n 's/^/       stnsd: /p' "$WORK/stnsd.log" | tail -5
+			sed -n 's/^/       curl: /p' | tail -8
+		# What the server made of the certificate, in its own words.
+		sed -n 's/^/       stnsd: /p' "$WORK/stnsd.log" | tail -6
+		# And what the local openssl makes of the same pair.
+		openssl verify -CAfile "$WORK/ca.pem" -purpose sslclient "$WORK/client.pem" 2>&1 |
+			sed 's/^/       verify: /'
+		openssl x509 -in "$WORK/client.pem" -noout -issuer -subject -dates \
+			-signature_algorithm 2>&1 | sed 's/^/       client: /'
+		openssl x509 -in "$WORK/ca.pem" -noout -subject -dates 2>&1 |
+			sed 's/^/       ca: /'
+		date | sed 's/^/       now: /' 
 		;;
 	esac
 else
