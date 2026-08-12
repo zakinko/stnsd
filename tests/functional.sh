@@ -274,7 +274,7 @@ fi
 # also avoids -addext, which is younger than some of the LibreSSL in use here.
 if [ ! -f "$WORK/openssl.cnf" ]; then
 	:
-elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
+elif certerr=$(openssl req -x509 -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
     -out "$WORK/server.pem" -days 1 -subj "/CN=localhost" \
     -config "$WORK/openssl.cnf" -extensions server_ext 2>&1); then
 
@@ -321,14 +321,19 @@ elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-k
 
 	echo
 	echo "== TLS with client certificates =="
-	openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/ca-key.pem" -out "$WORK/ca.pem" \
-		-days 1 -subj "/CN=stnsd test CA" \
+	# -sha256 on every one of these: LibreSSL's x509 -req still signs with
+	# SHA-1 by default, and an OpenSSL 3 server refuses to verify that at its
+	# default security level -- which it reports to the client as "unknown
+	# CA", a considerable distance from the truth.
+	openssl req -x509 -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/ca-key.pem" \
+		-out "$WORK/ca.pem" -days 1 -subj "/CN=stnsd test CA" \
 		-config "$WORK/openssl.cnf" -extensions ca_ext >/dev/null 2>&1
-	openssl req -new -newkey rsa:2048 -nodes -keyout "$WORK/client-key.pem" \
+	openssl req -new -sha256 -newkey rsa:2048 -nodes -keyout "$WORK/client-key.pem" \
 		-out "$WORK/client.csr" -subj "/CN=client" \
 		-config "$WORK/openssl.cnf" >/dev/null 2>&1
-	openssl x509 -req -in "$WORK/client.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca-key.pem" \
-		-CAcreateserial -out "$WORK/client.pem" -days 1 >/dev/null 2>&1
+	openssl x509 -req -sha256 -in "$WORK/client.csr" -CA "$WORK/ca.pem" \
+		-CAkey "$WORK/ca-key.pem" -CAcreateserial -out "$WORK/client.pem" \
+		-days 1 >/dev/null 2>&1
 
 	cp "$WORK/tls.conf" "$WORK/mtls.conf"
 	printf 'ca   = "%s"\n' "$WORK/ca.pem" >> "$WORK/mtls.conf"
@@ -355,10 +360,6 @@ elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-k
 		curl -sf -m 5 -o /dev/null --cacert "$WORK/server.pem" \
 			"https://localhost:$PORT/v1/users?name=alice"
 
-	# Some clients cannot present a certificate under TLS 1.3 -- LibreSSL was
-	# a while catching up -- so a failure is retried at 1.2 before being
-	# called one.  Which version it took is reported either way: it is the
-	# client's limitation, not the server's, but it is worth knowing.
 	mtls=$(curl -s -m 10 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
 		--key "$WORK/client-key.pem" "https://localhost:$PORT/v1/users?name=alice" 2>&1)
 	case "$mtls" in
@@ -366,24 +367,13 @@ elif certerr=$(openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-k
 		ok "a client with one is served"
 		;;
 	*)
-		mtls12=$(curl -s -m 10 --tls-max 1.2 --cacert "$WORK/server.pem" \
-			--cert "$WORK/client.pem" --key "$WORK/client-key.pem" \
-			"https://localhost:$PORT/v1/users?name=alice" 2>&1)
-		case "$mtls12" in
-		*'"name":"alice"'*)
-			ok "a client with one is served (this client needs TLS 1.2 to send it)"
-			;;
-		*)
-			fail "a client with one is served"
-			echo "       at 1.3: $mtls"
-			echo "       at 1.2: $mtls12"
-			curl -v -m 10 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
-				--key "$WORK/client-key.pem" \
-				"https://localhost:$PORT/v1/status" 2>&1 |
-				sed -n 's/^/       curl: /p' | tail -12
-			sed -n 's/^/       stnsd: /p' "$WORK/stnsd.log" | tail -5
-			;;
-		esac
+		# The handshake says more than the empty body does, so print it.
+		fail "a client with one is served"
+		echo "       got: $mtls"
+		curl -v -m 10 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
+			--key "$WORK/client-key.pem" "https://localhost:$PORT/v1/status" 2>&1 |
+			sed -n 's/^/       curl: /p' | tail -12
+		sed -n 's/^/       stnsd: /p' "$WORK/stnsd.log" | tail -5
 		;;
 	esac
 else
