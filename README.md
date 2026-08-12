@@ -63,7 +63,7 @@ and TLS. The TOML backend is the one this is for.
 | token and basic auth | yes | yes |
 | id range headers | yes | yes |
 | LDAP, Redis, etcd, DynamoDB | yes | no |
-| TLS | yes | no, put relayd(8) in front |
+| TLS | yes | no, terminate it in front |
 | architectures | where Go runs | where NetBSD runs |
 
 ## Installing
@@ -147,8 +147,14 @@ credentials are compared in constant time.
 
 **No TLS.** Not because it would not be useful, but because a 900-line server
 that also terminates TLS is a 900-line server with an OpenSSL dependency and a
-much more interesting attack surface. `relayd(8)` is in the NetBSD base system
-and does it properly.
+much more interesting attack surface — in a process that holds every password
+hash you have. Put a terminator in front of it: `stunnel`, `nginx` or `haproxy`
+from pkgsrc, listening with a certificate and forwarding to `127.0.0.1:1104`.
+The client speaks TLS perfectly well, including client certificates.
+
+Note that NetBSD's base system has no such terminator — `relayd(8)` is
+OpenBSD's, not NetBSD's — so this is a package you install, not something
+already on the machine.
 
 ## Testing
 
