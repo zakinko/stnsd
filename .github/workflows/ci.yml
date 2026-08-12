@@ -96,11 +96,13 @@ jobs:
             pkg upgrade -y
             # DragonFly's base crypto is private: no openssl headers under
             # /usr/include, so TLS builds against the package.  Installing it
-            # swaps out a good deal of the package set, curl included, so put
-            # curl in afterwards and check that both are still there.
+            # swaps out a good deal of the package set and takes curl and rsync
+            # with it -- rsync being what the action copies the work tree back
+            # with, so its absence fails the job after every test has passed.
+            # Put openssl in first, then the two it displaced.
             pkg install -y openssl
-            pkg install -y curl
-            which curl openssl
+            pkg install -y curl rsync
+            which curl openssl rsync
           run: |
             set -e
             uname -a
