@@ -299,10 +299,11 @@ free_entries(stnsd_entries_t *e)
 }
 
 static const char *const root_keys[] = {
-	"port", "listen", "users", "groups", "basic_auth", "token_auth", NULL
+	"port", "listen", "users", "groups", "basic_auth", "token_auth", "tls", NULL
 };
 static const char *const basic_keys[] = { "user", "password", NULL };
 static const char *const token_keys[] = { "tokens", NULL };
+static const char *const tls_keys[] = { "cert", "key", "ca", NULL };
 
 /*
  * Read the whole file.  On failure errbuf says what was wrong and nothing is
@@ -374,6 +375,35 @@ stnsd_config_load(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen
 		}
 	}
 
+	/*
+	 * [tls] carries upstream's keys and upstream's meaning: cert and key
+	 * serve TLS, and a ca additionally demands a client certificate signed
+	 * by it.  Whether this build can honour that is tls.c's business.
+	 */
+	if ((tab = toml_table_in(root, "tls")) != NULL) {
+		if (reject_unknown(tab, tls_keys, errbuf, errlen, "[tls] ") != STNSD_OK)
+			goto out_toml;
+		if (conf_str(tab, "cert", &c->tls_cert, errbuf, errlen, "[tls] ") != STNSD_OK ||
+		    conf_str(tab, "key", &c->tls_key, errbuf, errlen, "[tls] ") != STNSD_OK ||
+		    conf_str(tab, "ca", &c->tls_ca, errbuf, errlen, "[tls] ") != STNSD_OK)
+			goto out_toml;
+		/*
+		 * Half a TLS configuration is refused here rather than at the
+		 * first handshake.  A ca on its own is the dangerous one: it
+		 * reads like "require client certificates" and would in fact
+		 * do nothing at all, since without a cert and key there is no
+		 * TLS to require them during.
+		 */
+		if ((c->tls_cert == NULL) != (c->tls_key == NULL)) {
+			snprintf(errbuf, errlen, "[tls] needs both cert and key");
+			goto out_toml;
+		}
+		if (c->tls_ca != NULL && c->tls_cert == NULL) {
+			snprintf(errbuf, errlen, "[tls] ca does nothing without cert and key");
+			goto out_toml;
+		}
+	}
+
 	if (load_entries(root, "users", 1, &c->users, errbuf, errlen) != STNSD_OK)
 		goto out_toml;
 	if (load_entries(root, "groups", 0, &c->groups, errbuf, errlen) != STNSD_OK)
@@ -396,6 +426,9 @@ stnsd_config_free(stnsd_conf_t *c)
 	free(c->listen);
 	free(c->basic_user);
 	free(c->basic_password);
+	free(c->tls_cert);
+	free(c->tls_key);
+	free(c->tls_ca);
 	stnsd_strings_free(c->tokens, c->ntokens);
 	free_entries(&c->users);
 	free_entries(&c->groups);

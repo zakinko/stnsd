@@ -1,6 +1,6 @@
 # $NetBSD$
 
-DISTNAME=	stnsd-0.1.0
+DISTNAME=	stnsd-0.2.0
 CATEGORIES=	security
 MASTER_SITES=	${MASTER_SITE_GITHUB:=zakinko/}
 GITHUB_TAG=	v${PKGVERSION_NOREV}
@@ -51,4 +51,9 @@ CONF_FILES_PERMS=	${EGDIR}/stns.conf ${PKG_SYSCONFDIR}/stns.conf \
 
 TEST_TARGET=	test
 
+# Which OpenSSL this builds against is buildlink3's decision, not ours: the
+# base one where it is good enough, pkgsrc's where the administrator asked for
+# that with PREFER_PKGSRC=yes.  The compiler wrapper then puts the right
+# headers and libraries in front of the build, so OPENSSL_PREFIX stays unset.
+.include "../../security/openssl/buildlink3.mk"
 .include "../../mk/bsd.pkg.mk"

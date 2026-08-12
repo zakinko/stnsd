@@ -6,5 +6,6 @@ It is a second implementation of the API upstream STNS defines, in C and with
 no dependency beyond libc.  The configuration file is the same one, and a test
 suite serves the same file from both servers and compares every answer.
 
-Only the TOML backend is implemented: no LDAP, no Redis, no etcd, and no TLS
-of its own.
+Only the TOML backend is implemented: no LDAP, no Redis and no etcd.  TLS,
+including requiring client certificates, is configured with the same keys
+upstream uses.

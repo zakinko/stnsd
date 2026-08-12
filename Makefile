@@ -41,10 +41,38 @@ WARNS=		-Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes \
 CPPFLAGS+=	-I${.CURDIR}/src -I${.CURDIR}/external/mit/tomlc99 \
 		-DSTNSD_CONFDIR=\"${SYSCONFDIR}\"
 
+# TLS comes from OpenSSL, which is in the base system on all three platforms,
+# so it costs no package dependency.  In pkgsrc the package includes
+# security/openssl/buildlink3.mk instead of assuming that, which is what makes
+# PREFER_PKGSRC=yes get the pkgsrc one.
+#
+# "make WITHOUT_TLS=yes" drops it, for a machine that terminates TLS elsewhere
+# and would rather not have the library mapped into a process holding every
+# password hash it serves.  Such a build refuses to start on a configuration
+# that asks for TLS, rather than serving it in the clear.
+# OPENSSL_PREFIX points the build at an OpenSSL that is not the base system's
+# -- pkgsrc's, say, on a machine set up with PREFER_PKGSRC=yes, or a homebrew
+# one while developing.  Left empty, the compiler's own search path is used,
+# which is what finds the base library on all three platforms.  The pkgsrc
+# package does not set it: buildlink3 puts the right one in front of the
+# compiler wrapper, and honours PREFER_PKGSRC itself.
+OPENSSL_PREFIX?=	# empty
+
+.if defined(WITHOUT_TLS)
+CPPFLAGS+=	-DSTNSD_NO_TLS
+.else
+LIBS+=		-lssl -lcrypto
+.  if !empty(OPENSSL_PREFIX)
+CPPFLAGS+=	-I${OPENSSL_PREFIX}/include
+LDFLAGS+=	-L${OPENSSL_PREFIX}/lib -Wl,-rpath,${OPENSSL_PREFIX}/lib
+.  endif
+.endif
+
 CORE_OBJS=	src/config.o \
 		src/model.o \
 		src/json.o \
 		src/http.o \
+		src/tls.o \
 		src/log.o \
 		external/mit/tomlc99/toml.o
 
@@ -95,7 +123,7 @@ plist: all
 asan:
 	${CC} -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer \
 		${WARNS} ${CPPFLAGS} \
-		src/config.c src/model.c src/json.c src/http.c src/log.c \
+		src/config.c src/model.c src/json.c src/http.c src/tls.c src/log.c \
 		external/mit/tomlc99/toml.c tests/unit_test.c \
 		${LDFLAGS} ${LIBS} -o ${TEST}-asan
 	./${TEST}-asan

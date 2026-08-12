@@ -2,8 +2,8 @@
 
 A small [STNS](https://stns.jp) API server for **NetBSD**, **FreeBSD** and
 **DragonFly BSD**. It serves users, groups and their SSH public keys from a
-TOML file, over the same v1 HTTP API upstream STNS serves, in C and with no
-dependency beyond libc.
+TOML file, over the same v1 API upstream STNS serves, in C, over HTTP or TLS,
+with nothing outside the base system behind it.
 
 ```console
 # stnsd -t
@@ -45,7 +45,8 @@ byte for byte — including the parts nobody would think to write down:
 - `{}` for a lookup that found nothing, `{"message":"Not Found"}` for a path
   that does not exist — one is STNS's error type, the other is the router's
 
-38 comparisons pass. Two disagreements are deliberate and listed in
+44 comparisons pass, six of them over TLS, which upstream serves from the
+same two configuration keys. Two disagreements are deliberate and listed in
 [`tests/compat.sh`](tests/compat.sh): upstream's `400` for a malformed id
 quotes the id back in the body, and we do not repeat input into an error; and
 upstream skips authentication entirely whenever the environment variable `CI`
@@ -53,8 +54,8 @@ is set, which we do not copy, because a server that stops checking credentials
 because of an inherited variable is a trap.
 
 What is not implemented: the LDAP interface, the Redis, etcd and DynamoDB
-backends, the password-change endpoint, `include`, YAML and S3 configuration,
-and TLS. The TOML backend is the one this is for.
+backends, the password-change endpoint, and `include`, YAML and S3
+configuration. The TOML backend is the one this is for.
 
 | | upstream STNS | stnsd |
 | --- | --- | --- |
@@ -63,7 +64,7 @@ and TLS. The TOML backend is the one this is for.
 | token and basic auth | yes | yes |
 | id range headers | yes | yes |
 | LDAP, Redis, etcd, DynamoDB | yes | no |
-| TLS | yes | no, terminate it in front |
+| TLS, and client certificates | yes | yes |
 | architectures | where Go runs | where NetBSD runs |
 
 ## Installing
@@ -99,8 +100,8 @@ make install       # PREFIX defaults to /usr/pkg on NetBSD, /usr/local elsewhere
 ```
 
 There is nothing to install beyond the binary, the rc.d script and the sample
-configuration, and nothing to install them *with*: no libraries, no toolchain
-but cc.
+configuration, and nothing to build them with but cc and the base system's
+OpenSSL — or not even that, with `make WITHOUT_TLS=yes`.
 
 ## Running it
 
@@ -145,22 +146,41 @@ its address space. It accepts `GET`, a request line, headers and nothing else;
 the request is bounded at 16KB, the connection at a 30 second timeout, and
 credentials are compared in constant time.
 
-**No TLS.** Not because it would not be useful, but because a 900-line server
-that also terminates TLS is a 900-line server with an OpenSSL dependency and a
-much more interesting attack surface — in a process that holds every password
-hash you have. Put a terminator in front of it: `stunnel`, `nginx` or `haproxy`
-from pkgsrc, listening with a certificate and forwarding to `127.0.0.1:1104`.
-The client speaks TLS perfectly well, including client certificates.
+**TLS is two configuration keys, and one of them changes the shape of the
+system.** `tls.cert` and `tls.key` serve HTTPS; adding `tls.ca` additionally
+requires the client to present a certificate signed by it, which is upstream's
+behaviour and the reason to want it here. A bearer token travels with every
+request and is worth stealing; a client certificate stays on the machine that
+holds it. This matters more than usual for a server whose replies contain
+password hashes.
 
-Note that NetBSD's base system has no such terminator — `relayd(8)` is
-OpenBSD's, not NetBSD's — so this is a package you install, not something
-already on the machine.
+```toml
+[tls]
+cert = "/usr/pkg/etc/stns/server/server.pem"
+key  = "/usr/pkg/etc/stns/server/server-key.pem"
+ca   = "/usr/pkg/etc/stns/server/ca.pem"   # optional: demand client certificates
+```
+
+Half a configuration is refused at start up rather than at the first
+handshake — a `ca` on its own especially, which reads like "require client
+certificates" and would otherwise require nothing at all. The certificate is
+loaded once, before the socket opens, so an unreadable one stops the daemon
+instead of producing failed handshakes nobody is watching.
+
+OpenSSL comes from the base system on all three platforms, so this costs no
+package dependency; in pkgsrc the package goes through
+`security/openssl/buildlink3.mk`, which is what makes `PREFER_PKGSRC=yes` get
+the pkgsrc one instead. `make WITHOUT_TLS=yes` builds without any of it, for a
+machine that terminates TLS elsewhere and would rather not have the library
+mapped into a process holding every password hash it serves. Such a build
+refuses to start on a configuration that asks for TLS rather than quietly
+serving it in the clear.
 
 ## Testing
 
 ```sh
-make test       # 53 unit checks, then 30 against the running daemon
-make compat     # 38 answers compared against upstream STNS itself
+make test       # 60 unit checks, then 40 against the running daemon
+make compat     # 44 answers compared against upstream STNS itself
 make asan       # the unit tests under AddressSanitizer and UBSan
 make external   # the bundled tomlc99 still matches external/MANIFEST
 make plist      # a staged install still matches the packaging lists

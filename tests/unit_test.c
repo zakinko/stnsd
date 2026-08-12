@@ -130,6 +130,21 @@ test_config(void)
 	ok(c.users.highest_id == 1 && c.users.lowest_id == 1, "the id range of one user");
 	stnsd_config_free(&c);
 
+	ok(load("[tls]\ncert = \"/x.pem\"\nkey = \"/x-key.pem\"\n", &c, err, sizeof(err)),
+	    "a [tls] table with a cert and a key loads");
+	eq_str(c.tls_cert, "/x.pem", "the certificate path is read");
+	ok(c.tls_ca == NULL, "and no ca means no client certificates are demanded");
+	stnsd_config_free(&c);
+
+	ok(!load("[tls]\ncert = \"/x.pem\"\n", &c, err, sizeof(err)),
+	    "a certificate without a key is refused");
+	ok(!load("[tls]\nkey = \"/x-key.pem\"\n", &c, err, sizeof(err)),
+	    "and a key without a certificate");
+	ok(!load("[tls]\nca = \"/ca.pem\"\n", &c, err, sizeof(err)),
+	    "a ca on its own is refused, since it would silently require nothing");
+	ok(!load("[tls]\ncert = \"/x.pem\"\nkey = \"/k\"\nverify = true\n", &c, err, sizeof(err)),
+	    "an unknown key in [tls] is refused");
+
 	ok(load("[users.a]\nid = 5\n[users.b]\nid = 9\n[users.c]\nid = 3\n", &c, err, sizeof(err)),
 	    "three users load");
 	ok(c.users.highest_id == 9, "the highest id is found");

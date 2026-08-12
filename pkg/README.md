@@ -38,7 +38,7 @@ machine can be both without the two files colliding.
 ## Checksums
 
 Both `distinfo` files are checked in and describe the release tarball github
-builds from the `v0.1.0` tag. Without them neither package can be installed at
+builds from the `v0.2.0` tag. Without them neither package can be installed at
 all, which makes "installable" a thing to test rather than to assert: the
 Packaging workflow fetches that tarball in a VM, checks it against these
 checksums, builds the package, installs it, starts the daemon through rc.d and
@@ -61,6 +61,6 @@ cd ports/security/stnsd  && make makesum        # ports and DPorts
 ```
 
 The two disagree about everything except the idea: pkgsrc records BLAKE2s,
-SHA512 and a size for `stnsd-0.1.0.tar.gz`, ports records a timestamp, a
-SHA256 and a size for `zakinko-stnsd-v0.1.0_GH0.tar.gz`, which is the same
+SHA512 and a size for `stnsd-0.2.0.tar.gz`, ports records a timestamp, a
+SHA256 and a size for `zakinko-stnsd-v0.2.0_GH0.tar.gz`, which is the same
 bytes under the name each framework gives it.

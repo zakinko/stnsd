@@ -23,6 +23,10 @@ STNSD=${1:-./stnsd}
 STNS=${STNS:-stns}
 PORT_A=${PORT_A:-11104}		# stnsd
 PORT_B=${PORT_B:-11105}		# upstream
+# localhost rather than an address, so that one certificate fits both servers.
+HOST=localhost
+SCHEME=http
+CURL_CA=""
 SRCDIR=$(cd "$(dirname "$0")/.." && pwd)
 WORK=${WORK:-/tmp/stnsd_compat.$$}
 
@@ -77,7 +81,7 @@ trap cleanup EXIT INT TERM
 wait_for() {
 	i=0
 	while [ $i -lt 100 ]; do
-		curl -sf -o /dev/null "http://127.0.0.1:$1/v1/status" && return 0
+		curl -sf $CURL_CA -o /dev/null "$SCHEME://$HOST:$1/v1/status" && return 0
 		i=$((i + 1))
 		sleep 0.2
 	done
@@ -87,10 +91,20 @@ wait_for() {
 }
 
 # start_servers <config>  - the same file, served by both, on two ports.
+#
+# Whether that file turns TLS on decides how the comparison talks to them, so
+# the same checks run over both transports without being written twice.
 start_servers() {
 	stop_servers
 	sed "s/^port = .*/port = $PORT_A/" "$1" > "$WORK/a.conf"
 	sed "s/^port = .*/port = $PORT_B/" "$1" > "$WORK/b.conf"
+	if grep -q '^\[tls\]' "$1"; then
+		SCHEME=https
+		CURL_CA="--cacert $WORK/server.pem"
+	else
+		SCHEME=http
+		CURL_CA=""
+	fi
 
 	"$STNSD" -f -c "$WORK/a.conf" > "$WORK/$PORT_A.log" 2>&1 &
 	pids="$pids $!"
@@ -106,7 +120,7 @@ start_servers() {
 # fetch <port> <path> [curl args...] - status, headers and body, in one file.
 fetch() {
 	port=$1; path=$2; shift 2
-	curl -s -o "$WORK/body" -D "$WORK/head" "$@" "http://127.0.0.1:$port$path"
+	curl -s $CURL_CA -o "$WORK/body" -D "$WORK/head" "$@" "$SCHEME://$HOST:$port$path"
 	status=$(head -1 "$WORK/head" | awk '{print $2}')
 	ids=$(grep -i '^\(user\|group\)-\(highest\|lowest\)-id:' "$WORK/head" |
 		tr 'A-Z' 'a-z' | tr -d '\r' | sort)
@@ -158,7 +172,7 @@ same_set() {
 	desc=$1; path=$2
 
 	for port in $PORT_A $PORT_B; do
-		curl -s "http://127.0.0.1:$port$path" |
+		curl -s $CURL_CA "$SCHEME://$HOST:$port$path" |
 			awk '{ gsub(/\},\{/, "}\n{"); sub(/^\[/, ""); sub(/\]$/, ""); print }' |
 			sort > "$WORK/$port.set"
 	done
@@ -225,6 +239,33 @@ start_servers "$WORK/basic.conf"
 same "no credentials are refused" "/v1/users?name=alice"
 same "wrong credentials are refused" "/v1/users?name=alice" -u stns:wrong
 same "the right credentials are accepted" "/v1/users?name=alice" -u stns:hunter2
+
+echo
+echo "== TLS, from both =="
+# The same questions again over TLS.  Upstream serves it from the same two
+# configuration keys, so if the answers still match, they match on a transport
+# neither of us can fake.
+if ! openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
+    -out "$WORK/server.pem" -days 1 -subj "/CN=$HOST" \
+    -addext "subjectAltName=DNS:$HOST,IP:127.0.0.1" >/dev/null 2>&1; then
+	echo "skip - openssl(1) could not make a certificate here"
+elif { cp "$SRCDIR/tests/stns.conf" "$WORK/probe.conf"
+	printf '\n[tls]\ncert = "/nonexistent.pem"\nkey = "/nonexistent-key.pem"\n' >> "$WORK/probe.conf"
+	"$STNSD" -t -c "$WORK/probe.conf" 2>&1; } | grep -q "built without TLS"; then
+	echo "skip - this stnsd was built with WITHOUT_TLS"
+else
+	cp "$SRCDIR/tests/stns.conf" "$WORK/tls.conf"
+	printf '\n[tls]\ncert = "%s"\nkey  = "%s"\n' \
+		"$WORK/server.pem" "$WORK/server-key.pem" >> "$WORK/tls.conf"
+	if start_servers "$WORK/tls.conf"; then
+		same "GET /v1/users?name=alice over TLS" "/v1/users?name=alice"
+		same "GET /v1/users?id=1003 over TLS" "/v1/users?id=1003"
+		same "GET /v1/groups?name=ops over TLS" "/v1/groups?name=ops"
+		same "a miss over TLS" "/v1/users?name=nobody"
+		same "GET /v1/status over TLS" "/v1/status"
+		same_set "GET /v1/users lists the same users over TLS" "/v1/users"
+	fi
+fi
 
 echo
 echo "$checks checks, $failures failures"

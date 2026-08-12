@@ -13,6 +13,7 @@
  * the fork, shared by copy on write, so no lock is needed anywhere.
  */
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 
 #include <err.h>
@@ -217,8 +218,21 @@ main(int argc, char *argv[])
 		(void)fprintf(stderr, "stnsd: %s\n", errbuf);
 		return 1;
 	}
+	/*
+	 * The TLS context is built here, before anything is served, so that an
+	 * unreadable certificate is a refusal to start rather than a run of
+	 * failed handshakes.  -t therefore checks it too.
+	 */
+	if (stnsd_tls_setup(&conf, errbuf, sizeof(errbuf)) != STNSD_OK) {
+		(void)fprintf(stderr, "stnsd: %s\n", errbuf);
+		stnsd_config_free(&conf);
+		return 1;
+	}
 	if (testonly) {
-		(void)printf("%s: %zu users, %zu groups, port %d\n", config, conf.users.n, conf.groups.n, conf.port);
+		(void)printf("%s: %zu users, %zu groups, port %d, %s\n", config, conf.users.n, conf.groups.n,
+		    conf.port, conf.tls_ctx != NULL ? (conf.tls_ca != NULL ? "TLS with client certificates" : "TLS")
+		    : "no TLS");
+		stnsd_tls_teardown(&conf);
 		stnsd_config_free(&conf);
 		return 0;
 	}
@@ -254,7 +268,8 @@ main(int argc, char *argv[])
 	(void)signal(SIGINT, on_signal);
 	(void)signal(SIGCHLD, on_signal);
 
-	stnsd_log(LOG_INFO, "stnsd %s listening on %s, %zu users, %zu groups", STNSD_VERSION, listen_spec,
+	stnsd_log(LOG_INFO, "stnsd %s listening on %s%s, %zu users, %zu groups", STNSD_VERSION, listen_spec,
+	    conf.tls_ctx != NULL ? (conf.tls_ca != NULL ? " (TLS, client certificate required)" : " (TLS)") : "",
 	    conf.users.n, conf.groups.n);
 
 	while (!want_stop) {
@@ -268,7 +283,8 @@ main(int argc, char *argv[])
 			stnsd_conf_t fresh;
 
 			want_reload = 0;
-			if (stnsd_config_load(conf.path, &fresh, errbuf, sizeof(errbuf)) != STNSD_OK) {
+			if (stnsd_config_load(conf.path, &fresh, errbuf, sizeof(errbuf)) != STNSD_OK ||
+			    stnsd_tls_setup(&fresh, errbuf, sizeof(errbuf)) != STNSD_OK) {
 				/*
 				 * Keep serving the configuration we have.  A
 				 * typo in an editor must not empty the
@@ -277,6 +293,7 @@ main(int argc, char *argv[])
 				stnsd_log(LOG_ERR, "stnsd: reload failed, keeping the running configuration: %s",
 				    errbuf);
 			} else {
+				stnsd_tls_teardown(&conf);
 				stnsd_config_free(&conf);
 				conf = fresh;
 				stnsd_log(LOG_INFO, "stnsd: reloaded %s, %zu users, %zu groups", conf.path,
@@ -299,6 +316,8 @@ main(int argc, char *argv[])
 			continue;
 
 		for (i = 0; i < nfds; i++) {
+			struct timeval tv;
+			stnsd_conn_t conn;
 			int fd;
 			pid_t pid;
 
@@ -324,6 +343,16 @@ main(int argc, char *argv[])
 				}
 			}
 
+			/*
+			 * Bound the connection before the handshake, not after:
+			 * a peer that opens a TLS session and then says nothing
+			 * is as good a way to hold a slot as a silent HTTP one.
+			 */
+			tv.tv_sec = STNSD_IO_TIMEOUT;
+			tv.tv_usec = 0;
+			(void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+			(void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
 			if ((pid = fork()) < 0) {
 				stnsd_log(LOG_ERR, "stnsd: fork: %s", strerror(errno));
 				(void)close(fd);
@@ -336,8 +365,16 @@ main(int argc, char *argv[])
 					(void)close(fds[j]);
 				(void)signal(SIGHUP, SIG_DFL);
 				(void)signal(SIGCHLD, SIG_DFL);
-				(void)stnsd_serve_connection(fd, &conf);
-				(void)close(fd);
+				conn.fd = fd;
+				conn.ssl = NULL;
+				/*
+				 * The handshake happens in the child, so a
+				 * client that fails it costs one child and
+				 * nothing else.
+				 */
+				if (stnsd_tls_accept(&conf, &conn) == STNSD_OK)
+					(void)stnsd_serve_connection(&conn, &conf);
+				stnsd_conn_close(&conn);
 				_exit(0);
 			}
 			nchildren++;
@@ -352,6 +389,7 @@ main(int argc, char *argv[])
 		(void)unlink(pidfile_path);
 		free(pidfile_path);
 	}
+	stnsd_tls_teardown(&conf);
 	stnsd_config_free(&conf);
 	return 0;
 }

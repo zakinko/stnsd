@@ -69,13 +69,13 @@ trim(char *s)
  * the peer closed cleanly before saying anything, -1 on error or overrun.
  */
 static ssize_t
-read_request(int fd, char *buf, size_t buflen)
+read_request(stnsd_conn_t *conn, char *buf, size_t buflen)
 {
 	size_t len = 0;
 	ssize_t n;
 
 	while (len < buflen - 1) {
-		n = read(fd, buf + len, buflen - 1 - len);
+		n = stnsd_conn_read(conn, buf + len, buflen - 1 - len);
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
@@ -323,8 +323,8 @@ authorized(const request_t *r, const stnsd_conf_t *c, int exempt)
 
 /* One response, headers and all.  Returns STNSD_NG if the write failed. */
 static int
-respond(int fd, const request_t *r, int status, const char *reason, const char *content_type, const char *body,
-    size_t bodylen, const stnsd_entries_t *range, const char *range_what)
+respond(stnsd_conn_t *conn, const request_t *r, int status, const char *reason, const char *content_type,
+    const char *body, size_t bodylen, const stnsd_entries_t *range, const char *range_what)
 {
 	stnsd_buf_t head;
 	ssize_t n;
@@ -355,7 +355,7 @@ respond(int fd, const request_t *r, int status, const char *reason, const char *
 	}
 
 	for (off = 0; off < head.len; off += (size_t)n) {
-		if ((n = write(fd, head.data + off, head.len - off)) <= 0) {
+		if ((n = stnsd_conn_write(conn, head.data + off, head.len - off)) <= 0) {
 			if (n < 0 && errno == EINTR) {
 				n = 0;
 				continue;
@@ -365,7 +365,7 @@ respond(int fd, const request_t *r, int status, const char *reason, const char *
 		}
 	}
 	for (off = 0; off < bodylen; off += (size_t)n) {
-		if ((n = write(fd, body + off, bodylen - off)) <= 0) {
+		if ((n = stnsd_conn_write(conn, body + off, bodylen - off)) <= 0) {
 			if (n < 0 && errno == EINTR) {
 				n = 0;
 				continue;
@@ -395,13 +395,13 @@ out:
 #define JSON_UNAUTHORIZED "{\"message\":\"Unauthorized\"}\n"
 
 static int
-respond_json(int fd, const request_t *r, int status, const char *reason, stnsd_buf_t *body,
+respond_json(stnsd_conn_t *conn, const request_t *r, int status, const char *reason, stnsd_buf_t *body,
     const stnsd_entries_t *range, const char *range_what)
 {
 	if (body->error)
-		return respond(fd, r, 500, "Internal Server Error", "application/json", JSON_EMPTY,
+		return respond(conn, r, 500, "Internal Server Error", "application/json", JSON_EMPTY,
 		    strlen(JSON_EMPTY), range, range_what);
-	return respond(fd, r, status, reason, "application/json", body->data ? body->data : "", body->len, range,
+	return respond(conn, r, status, reason, "application/json", body->data ? body->data : "", body->len, range,
 	    range_what);
 }
 
@@ -413,7 +413,7 @@ respond_json(int fd, const request_t *r, int status, const char *reason, stnsd_b
  * a client's negative cache possible.
  */
 static int
-serve_entries(int fd, const request_t *r, const stnsd_conf_t *c, const stnsd_entries_t *e, int is_user)
+serve_entries(stnsd_conn_t *conn, const request_t *r, const stnsd_conf_t *c, const stnsd_entries_t *e, int is_user)
 {
 	const char *range_what = is_user ? "User" : "Group";
 	const stnsd_entry_t *one = NULL;
@@ -427,7 +427,7 @@ serve_entries(int fd, const request_t *r, const stnsd_conf_t *c, const stnsd_ent
 	if (r->query != NULL && *r->query != '\0') {
 		if (parse_query(r->query, &name, &id) != STNSD_OK || (name == NULL && id == NULL)) {
 			stnsd_buf_puts(&body, JSON_EMPTY);
-			rc = respond_json(fd, r, 400, "Bad Request", &body, e, range_what);
+			rc = respond_json(conn, r, 400, "Bad Request", &body, e, range_what);
 			goto out;
 		}
 		if (name != NULL) {
@@ -440,14 +440,14 @@ serve_entries(int fd, const request_t *r, const stnsd_conf_t *c, const stnsd_ent
 			n = strtol(id, &end, 10);
 			if (*id == '\0' || *end != '\0' || errno != 0 || n < 0 || n > 0x7fffffff) {
 				stnsd_buf_puts(&body, JSON_EMPTY);
-				rc = respond_json(fd, r, 400, "Bad Request", &body, e, range_what);
+				rc = respond_json(conn, r, 400, "Bad Request", &body, e, range_what);
 				goto out;
 			}
 			one = stnsd_find_by_id(e, (int)n);
 		}
 		if (one == NULL) {
 			stnsd_buf_puts(&body, JSON_EMPTY);
-			rc = respond_json(fd, r, 404, "Not Found", &body, e, range_what);
+			rc = respond_json(conn, r, 404, "Not Found", &body, e, range_what);
 			goto out;
 		}
 		stnsd_buf_add(&body, "[", 1);
@@ -456,13 +456,13 @@ serve_entries(int fd, const request_t *r, const stnsd_conf_t *c, const stnsd_ent
 		else
 			stnsd_json_group(&body, one);
 		stnsd_buf_puts(&body, "]\n");
-		rc = respond_json(fd, r, 200, "OK", &body, e, range_what);
+		rc = respond_json(conn, r, 200, "OK", &body, e, range_what);
 		goto out;
 	}
 
 	if (e->n == 0) {
 		stnsd_buf_puts(&body, JSON_EMPTY);
-		rc = respond_json(fd, r, 404, "Not Found", &body, e, range_what);
+		rc = respond_json(conn, r, 404, "Not Found", &body, e, range_what);
 		goto out;
 	}
 	stnsd_buf_add(&body, "[", 1);
@@ -475,7 +475,7 @@ serve_entries(int fd, const request_t *r, const stnsd_conf_t *c, const stnsd_ent
 			stnsd_json_group(&body, &e->v[i]);
 	}
 	stnsd_buf_puts(&body, "]\n");
-	rc = respond_json(fd, r, 200, "OK", &body, e, range_what);
+	rc = respond_json(conn, r, 200, "OK", &body, e, range_what);
 
 out:
 	(void)c;
@@ -484,7 +484,7 @@ out:
 }
 
 static int
-handle(int fd, const request_t *r, const stnsd_conf_t *c)
+handle(stnsd_conn_t *conn, const request_t *r, const stnsd_conf_t *c)
 {
 	int is_users = strcmp(r->path, "/v1/users") == 0;
 	int is_groups = strcmp(r->path, "/v1/groups") == 0;
@@ -494,17 +494,17 @@ handle(int fd, const request_t *r, const stnsd_conf_t *c)
 	const char *range_what = is_users ? "User" : "Group";
 
 	if (!is_users && !is_groups && !is_status && !is_root)
-		return respond(fd, r, 404, "Not Found", "application/json", JSON_NOT_FOUND, strlen(JSON_NOT_FOUND),
+		return respond(conn, r, 404, "Not Found", "application/json", JSON_NOT_FOUND, strlen(JSON_NOT_FOUND),
 		    NULL, NULL);
 
 	if (strcmp(r->method, "GET") != 0)
-		return respond(fd, r, 405, "Method Not Allowed", "application/json", JSON_NOT_ALLOWED,
+		return respond(conn, r, 405, "Method Not Allowed", "application/json", JSON_NOT_ALLOWED,
 		    strlen(JSON_NOT_ALLOWED), range, range_what);
 
 	if (!authorized(r, c, is_status || is_root)) {
 		if (stnsd_verbose)
 			stnsd_log(LOG_INFO, "401 %s", r->path);
-		return respond(fd, r, 401, "Unauthorized", "application/json", JSON_UNAUTHORIZED,
+		return respond(conn, r, 401, "Unauthorized", "application/json", JSON_UNAUTHORIZED,
 		    strlen(JSON_UNAUTHORIZED), range, range_what);
 	}
 
@@ -514,38 +514,32 @@ handle(int fd, const request_t *r, const stnsd_conf_t *c)
 	if (is_status) {
 		static const char body[] = "OK";
 
-		return respond(fd, r, 200, "OK", "text/plain; charset=UTF-8", body, strlen(body), NULL, NULL);
+		return respond(conn, r, 200, "OK", "text/plain; charset=UTF-8", body, strlen(body), NULL, NULL);
 	}
 	if (is_root) {
 		static const char body[] = "Hello! STNS!!1";
 
-		return respond(fd, r, 200, "OK", "text/plain; charset=UTF-8", body, strlen(body), NULL, NULL);
+		return respond(conn, r, 200, "OK", "text/plain; charset=UTF-8", body, strlen(body), NULL, NULL);
 	}
-	return serve_entries(fd, r, c, is_users ? &c->users : &c->groups, is_users);
+	return serve_entries(conn, r, c, is_users ? &c->users : &c->groups, is_users);
 }
 
 /*
  * Serve one connection to its end.
  *
- * The timeouts are the whole defence against a client that connects and then
- * says nothing: this process serves one connection and one only, so a stalled
- * peer would otherwise hold a slot until the machine reboots.
+ * The timeouts that keep a silent client from holding a slot are set on the
+ * socket before the handshake, by the accept loop -- a peer that opens a TLS
+ * connection and then says nothing has to be bounded too.
  */
 int
-stnsd_serve_connection(int fd, const stnsd_conf_t *c)
+stnsd_serve_connection(stnsd_conn_t *conn, const stnsd_conf_t *c)
 {
-	struct timeval tv;
 	char buf[STNSD_MAX_REQUEST];
 	request_t r;
 	ssize_t n;
 
-	tv.tv_sec = STNSD_IO_TIMEOUT;
-	tv.tv_usec = 0;
-	(void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-	(void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
 	for (;;) {
-		if ((n = read_request(fd, buf, sizeof(buf))) <= 0)
+		if ((n = read_request(conn, buf, sizeof(buf))) <= 0)
 			return n == 0 ? STNSD_OK : STNSD_NG;
 		if (parse_request(buf, &r) != STNSD_OK) {
 			static const char body[] = "{}\n";
@@ -553,11 +547,11 @@ stnsd_serve_connection(int fd, const stnsd_conf_t *c)
 
 			memset(&bad, 0, sizeof(bad));
 			bad.http_11 = 1;
-			(void)respond(fd, &bad, 400, "Bad Request", "application/json", body, strlen(body), NULL,
+			(void)respond(conn, &bad, 400, "Bad Request", "application/json", body, strlen(body), NULL,
 			    NULL);
 			return STNSD_NG;
 		}
-		if (handle(fd, &r, c) != STNSD_OK)
+		if (handle(conn, &r, c) != STNSD_OK)
 			return STNSD_NG;
 		if (!r.keep_alive)
 			return STNSD_OK;

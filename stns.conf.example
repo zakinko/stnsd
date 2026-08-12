@@ -23,6 +23,15 @@ port = 1104
 #user = "stns"
 #password = "secret"
 
+# TLS.  cert and key serve HTTPS; adding ca additionally requires the client to
+# present a certificate signed by it, which is worth more than a token here --
+# a token travels with every request, a client certificate stays put.  Half a
+# configuration is refused at start up, so "stnsd -t" will tell you.
+#[tls]
+#cert = "/usr/pkg/etc/stns/server/server.pem"
+#key  = "/usr/pkg/etc/stns/server/server-key.pem"
+#ca   = "/usr/pkg/etc/stns/server/ca.pem"
+
 # Users.  The table name is the account name.  Only id is required; everything
 # else has the same defaults the client applies -- an empty shell becomes
 # /bin/sh and an empty directory /home/<name>, decided by the client rather

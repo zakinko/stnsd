@@ -56,6 +56,18 @@ contains() {
 	esac
 }
 
+# succeeds <description> <command...>
+succeeds() {
+	desc=$1; shift
+	if "$@" >/dev/null 2>&1; then ok "$desc"; else fail "$desc"; fi
+}
+
+# denies <description> <command...>
+denies() {
+	desc=$1; shift
+	if "$@" >/dev/null 2>&1; then fail "$desc"; else ok "$desc"; fi
+}
+
 server_pid=""
 
 stop_server() {
@@ -222,6 +234,103 @@ start_server
 garbage=$(printf 'not http at all\r\n\r\n' | nc 127.0.0.1 $PORT 2>/dev/null | head -1)
 contains "is answered with 400 rather than a crash" "400" "$garbage"
 expect "and the server is still serving" "200" "$(status_of '/v1/users?name=alice')"
+
+echo
+echo "== TLS =="
+sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf" > "$WORK/probe.conf"
+printf '\n[tls]\ncert = "/nonexistent.pem"\nkey = "/nonexistent-key.pem"\n' >> "$WORK/probe.conf"
+case "$("$STNSD" -t -c "$WORK/probe.conf" 2>&1)" in
+*"built without TLS"*)
+	echo "skip - this stnsd was built with WITHOUT_TLS"
+	echo
+	echo "$checks checks, $failures failures"
+	[ "$failures" -eq 0 ]
+	exit $?
+	;;
+esac
+
+# openssl(1) is in the base system on all three platforms, but if a machine
+# somehow cannot make a certificate, say so rather than failing the suite.
+if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/server-key.pem" \
+    -out "$WORK/server.pem" -days 1 -subj "/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" >/dev/null 2>&1; then
+
+	sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf" > "$WORK/tls.conf"
+	printf '\n[tls]\ncert = "%s"\nkey  = "%s"\n' \
+		"$WORK/server.pem" "$WORK/server-key.pem" >> "$WORK/tls.conf"
+
+	contains "-t says the server will speak TLS" ", TLS" \
+		"$("$STNSD" -t -c "$WORK/tls.conf" 2>&1 || true)"
+
+	# A certificate that cannot be read must stop the server starting, not
+	# turn into a run of failed handshakes nobody is watching.
+	sed 's|^cert = .*|cert = "/nonexistent.pem"|' "$WORK/tls.conf" > "$WORK/badtls.conf"
+	if "$STNSD" -t -c "$WORK/badtls.conf" >/dev/null 2>&1; then
+		fail "an unreadable certificate is refused"
+	else
+		ok "an unreadable certificate is refused"
+	fi
+
+	stop_server
+	"$STNSD" -f -c "$WORK/tls.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+	server_pid=$!
+	i=0
+	while [ $i -lt 100 ]; do
+		curl -sf --cacert "$WORK/server.pem" -o /dev/null \
+			"https://localhost:$PORT/v1/status" && break
+		i=$((i + 1))
+		sleep 0.2
+	done
+
+	expect "an https lookup answers" \
+		"200" "$(curl -s -o /dev/null -w '%{http_code}' --cacert "$WORK/server.pem" \
+			"https://localhost:$PORT/v1/users?name=alice")"
+	contains "and answers with the user" '"name":"alice"' \
+		"$(curl -s --cacert "$WORK/server.pem" "https://localhost:$PORT/v1/users?name=alice")"
+	# Without the CA the certificate is untrusted, so curl must refuse: the
+	# point of TLS here is that the client checks, not that bytes are hidden.
+	denies "an untrusted certificate is refused by the client" \
+		curl -sf -m 5 -o /dev/null "https://localhost:$PORT/v1/status"
+	denies "plain http against a TLS port gets nowhere" \
+		curl -sf -m 5 -o /dev/null "http://localhost:$PORT/v1/status"
+	succeeds "and the server is still serving" \
+		curl -sf -m 5 -o /dev/null --cacert "$WORK/server.pem" "https://localhost:$PORT/v1/status"
+
+	echo
+	echo "== TLS with client certificates =="
+	openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/ca-key.pem" -out "$WORK/ca.pem" \
+		-days 1 -subj "/CN=stnsd test CA" >/dev/null 2>&1
+	openssl req -newkey rsa:2048 -nodes -keyout "$WORK/client-key.pem" -out "$WORK/client.csr" \
+		-subj "/CN=client" >/dev/null 2>&1
+	openssl x509 -req -in "$WORK/client.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca-key.pem" \
+		-CAcreateserial -out "$WORK/client.pem" -days 1 >/dev/null 2>&1
+
+	cp "$WORK/tls.conf" "$WORK/mtls.conf"
+	printf 'ca   = "%s"\n' "$WORK/ca.pem" >> "$WORK/mtls.conf"
+	contains "-t says client certificates will be required" "client certificates" \
+		"$("$STNSD" -t -c "$WORK/mtls.conf" 2>&1 || true)"
+
+	stop_server
+	"$STNSD" -f -c "$WORK/mtls.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+	server_pid=$!
+	i=0
+	while [ $i -lt 100 ]; do
+		curl -sf --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
+			--key "$WORK/client-key.pem" -o /dev/null \
+			"https://localhost:$PORT/v1/status" && break
+		i=$((i + 1))
+		sleep 0.2
+	done
+
+	denies "a client with no certificate is refused" \
+		curl -sf -m 5 -o /dev/null --cacert "$WORK/server.pem" \
+			"https://localhost:$PORT/v1/users?name=alice"
+	contains "a client with one is served" '"name":"alice"' \
+		"$(curl -s -m 5 --cacert "$WORK/server.pem" --cert "$WORK/client.pem" \
+			--key "$WORK/client-key.pem" "https://localhost:$PORT/v1/users?name=alice")"
+else
+	echo "skip - openssl(1) could not make a certificate here"
+fi
 
 echo
 echo "$checks checks, $failures failures"
