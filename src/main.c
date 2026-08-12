@@ -144,6 +144,80 @@ open_listeners(const char *spec, int *fds, int maxfds)
 	return n;
 }
 
+/*
+ * Sockets inherited from a supervisor, as Server::Starter passes them:
+ * SERVER_STARTER_PORT holds "host:port=fd" or "/path=fd" entries, separated by
+ * semicolons.  We are handed something already listening, so the point of the
+ * exercise is to bind nothing and check that what arrived is what was claimed.
+ */
+static int
+open_starter_listeners(int *fds, int maxfds, char *errbuf, size_t errlen)
+{
+	char spec[1024];
+	const char *env;
+	char *token, *next;
+	int n = 0;
+
+	if ((env = getenv("SERVER_STARTER_PORT")) == NULL || *env == '\0') {
+		snprintf(errbuf, errlen,
+		    "use_server_starter is set but SERVER_STARTER_PORT is not in the environment");
+		return -1;
+	}
+	if (strlcpy(spec, env, sizeof(spec)) >= sizeof(spec)) {
+		snprintf(errbuf, errlen, "SERVER_STARTER_PORT is longer than we can read");
+		return -1;
+	}
+
+	for (token = spec; token != NULL && *token != '\0'; token = next) {
+		struct sockaddr_storage ss;
+		socklen_t sslen = sizeof(ss);
+		char *eq;
+		long fd;
+		int accepting = 0;
+		socklen_t len = sizeof(accepting);
+
+		if ((next = strchr(token, ';')) != NULL)
+			*next++ = '\0';
+		if ((eq = strrchr(token, '=')) == NULL) {
+			snprintf(errbuf, errlen, "SERVER_STARTER_PORT: '%s' has no file descriptor", token);
+			return -1;
+		}
+		*eq++ = '\0';
+		fd = strtol(eq, NULL, 10);
+		if (fd < 0 || fd > 1024) {
+			snprintf(errbuf, errlen, "SERVER_STARTER_PORT: '%s' is not a file descriptor", eq);
+			return -1;
+		}
+		/*
+		 * It has to be a socket, and where the system will say so, one
+		 * that is listening.  Not every system answers SO_ACCEPTCONN --
+		 * macOS returns ENOPROTOOPT -- and refusing to start because we
+		 * could not ask would be the wrong way round: the supervisor
+		 * handed this over, and getsockname has already agreed it is a
+		 * socket.
+		 */
+		if (getsockname((int)fd, (struct sockaddr *)&ss, &sslen) < 0) {
+			snprintf(errbuf, errlen, "SERVER_STARTER_PORT: fd %ld for %s is not a socket: %s", fd,
+			    token, strerror(errno));
+			return -1;
+		}
+		if (getsockopt((int)fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &len) == 0 && !accepting) {
+			snprintf(errbuf, errlen, "SERVER_STARTER_PORT: fd %ld for %s is not listening", fd, token);
+			return -1;
+		}
+		if (n >= maxfds) {
+			snprintf(errbuf, errlen, "SERVER_STARTER_PORT hands over more sockets than we can use");
+			return -1;
+		}
+		fds[n++] = (int)fd;
+	}
+	if (n == 0) {
+		snprintf(errbuf, errlen, "SERVER_STARTER_PORT is empty");
+		return -1;
+	}
+	return n;
+}
+
 static void
 reap_children(void)
 {
@@ -229,9 +303,14 @@ main(int argc, char *argv[])
 		return 1;
 	}
 	if (testonly) {
-		(void)printf("%s: %zu users, %zu groups, port %d, %s\n", config, conf.users.n, conf.groups.n,
+		(void)printf("%s: %zu users, %zu groups, port %d, %s", config, conf.users.n, conf.groups.n,
 		    conf.port, conf.tls_ctx != NULL ? (conf.tls_ca != NULL ? "TLS with client certificates" : "TLS")
 		    : "no TLS");
+		if (conf.nallow > 0)
+			(void)printf(", %zu allow_ips %s", conf.nallow, conf.nallow == 1 ? "entry" : "entries");
+		if (conf.use_server_starter)
+			(void)printf(", sockets from the supervisor");
+		(void)printf("\n");
 		stnsd_tls_teardown(&conf);
 		stnsd_config_free(&conf);
 		return 0;
@@ -244,8 +323,17 @@ main(int argc, char *argv[])
 	else
 		(void)snprintf(listen_spec, sizeof(listen_spec), "%d", conf.port);
 
-	if ((nfds = open_listeners(listen_spec, fds, MAX_LISTEN)) == 0) {
+	if (conf.use_server_starter) {
+		if ((nfds = open_starter_listeners(fds, MAX_LISTEN, errbuf, sizeof(errbuf))) < 0) {
+			(void)fprintf(stderr, "stnsd: %s\n", errbuf);
+			stnsd_tls_teardown(&conf);
+			stnsd_config_free(&conf);
+			return 1;
+		}
+		(void)strlcpy(listen_spec, "sockets from the supervisor", sizeof(listen_spec));
+	} else if ((nfds = open_listeners(listen_spec, fds, MAX_LISTEN)) == 0) {
 		(void)fprintf(stderr, "stnsd: nothing to listen on\n");
+		stnsd_tls_teardown(&conf);
 		stnsd_config_free(&conf);
 		return 1;
 	}
@@ -268,7 +356,8 @@ main(int argc, char *argv[])
 	(void)signal(SIGINT, on_signal);
 	(void)signal(SIGCHLD, on_signal);
 
-	stnsd_log(LOG_INFO, "stnsd %s listening on %s%s, %zu users, %zu groups", STNSD_VERSION, listen_spec,
+	stnsd_log(LOG_INFO, "stnsd %s listening on %s%s%s, %zu users, %zu groups", STNSD_VERSION, listen_spec,
+	    conf.nallow > 0 ? " (allow_ips in force)" : "",
 	    conf.tls_ctx != NULL ? (conf.tls_ca != NULL ? " (TLS, client certificate required)" : " (TLS)") : "",
 	    conf.users.n, conf.groups.n);
 
@@ -316,6 +405,8 @@ main(int argc, char *argv[])
 			continue;
 
 		for (i = 0; i < nfds; i++) {
+			struct sockaddr_storage peer;
+			socklen_t peerlen = sizeof(peer);
 			struct timeval tv;
 			stnsd_conn_t conn;
 			int fd;
@@ -323,9 +414,23 @@ main(int argc, char *argv[])
 
 			if ((pfd[i].revents & POLLIN) == 0)
 				continue;
-			if ((fd = accept(fds[i], NULL, NULL)) < 0) {
+			if ((fd = accept(fds[i], (struct sockaddr *)&peer, &peerlen)) < 0) {
 				if (errno != EINTR && errno != ECONNABORTED)
 					stnsd_log(LOG_ERR, "stnsd: accept: %s", strerror(errno));
+				continue;
+			}
+			/*
+			 * allow_ips is applied here, to the address the
+			 * connection actually came from, before a handshake is
+			 * begun or a child is spawned for it.
+			 */
+			if (!stnsd_allowed(&conf, (struct sockaddr *)&peer)) {
+				char who[64];
+
+				if (stnsd_verbose)
+					stnsd_log(LOG_INFO, "stnsd: refused %s: not in allow_ips",
+					    stnsd_addr_text((struct sockaddr *)&peer, who, sizeof(who)));
+				(void)close(fd);
 				continue;
 			}
 			/*

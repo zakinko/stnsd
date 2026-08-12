@@ -10,9 +10,14 @@
  * port, [basic_auth] and [token_auth] beside them.
  */
 #include <errno.h>
+#include <glob.h>
+#include <libgen.h>
 #include <limits.h>
 
 #include "stnsd.h"
+
+/* How many include levels deep to follow before calling it a loop. */
+#define MAX_INCLUDE_DEPTH 8
 
 static char *
 dup_str(const char *s)
@@ -79,6 +84,25 @@ conf_int(toml_table_t *tab, const char *key, int *dst, int def, char *errbuf, si
 	return STNSD_OK;
 }
 
+static int
+conf_bool(toml_table_t *tab, const char *key, int *dst, char *errbuf, size_t errlen, const char *where)
+{
+	toml_datum_t d;
+
+	if (tab == NULL)
+		return STNSD_OK;
+	d = toml_bool_in(tab, key);
+	if (d.ok) {
+		*dst = d.u.b;
+		return STNSD_OK;
+	}
+	if (toml_key_exists(tab, key)) {
+		snprintf(errbuf, errlen, "%s%s is not true or false", where, key);
+		return STNSD_NG;
+	}
+	return STNSD_OK;
+}
+
 /*
  * Read an array of strings.  present is set whenever the key is there at all,
  * empty or not: [] and absent are different answers on the wire.
@@ -123,6 +147,30 @@ conf_strings(toml_table_t *tab, const char *key, char ***vec, size_t *n, int *pr
 	return STNSD_OK;
 }
 
+static const char *const root_keys[] = {
+	"port", "listen", "users", "groups", "basic_auth", "token_auth", "tls",
+	"include", "allow_ips", "use_server_starter", NULL
+};
+
+/*
+ * Upstream's remaining keys, each with the reason it is not here.
+ *
+ * "unknown key 'redis'" would be a lie: it is not that we have never heard of
+ * it, it is that this server does not do that.  Saying which is the difference
+ * between an administrator fixing a typo and an administrator wondering
+ * whether their configuration file is corrupt.
+ */
+static const struct {
+	const char *key;
+	const char *why;
+} unsupported_keys[] = {
+	{ "load_module", "load_module names a Go plugin, which stnsd cannot load; only the TOML backend is built in" },
+	{ "module_path", "module_path goes with load_module, and stnsd has no plugin backends" },
+	{ "modules", "[modules] configures the plugin backends, which stnsd does not have" },
+	{ "redis", "[redis] selects the Redis backend; stnsd serves the TOML file only" },
+	{ "ldap", "[ldap] configures upstream's LDAP interface, which stnsd does not serve" },
+	{ NULL, NULL }
+};
 static const char *const user_keys[] = {
 	"id", "name", "password", "group_id", "directory", "shell", "gecos", "keys", "link_users", NULL
 };
@@ -141,10 +189,19 @@ reject_unknown(toml_table_t *tab, const char *const *known, char *errbuf, size_t
 			if (strcmp(known[j], key) == 0)
 				break;
 		}
-		if (known[j] == NULL) {
-			snprintf(errbuf, errlen, "%sunknown key '%s'", where, key);
-			return STNSD_NG;
+		if (known[j] != NULL)
+			continue;
+		/* Only the root table has keys we know of and decline. */
+		if (known == root_keys) {
+			for (j = 0; unsupported_keys[j].key != NULL; j++) {
+				if (strcmp(unsupported_keys[j].key, key) == 0) {
+					snprintf(errbuf, errlen, "%s", unsupported_keys[j].why);
+					return STNSD_NG;
+				}
+			}
 		}
+		snprintf(errbuf, errlen, "%sunknown key '%s'", where, key);
+		return STNSD_NG;
 	}
 	return STNSD_OK;
 }
@@ -235,12 +292,12 @@ free_entry(stnsd_entry_t *e)
 static int
 load_entries(toml_table_t *root, const char *table, int is_user, stnsd_entries_t *out, char *errbuf, size_t errlen)
 {
+	stnsd_entry_t *grown;
 	toml_table_t *parent;
 	const char *name;
-	size_t i, j;
+	size_t i;
 	int n;
 
-	memset(out, 0, sizeof(*out));
 	if ((parent = toml_table_in(root, table)) == NULL)
 		return STNSD_OK;
 
@@ -248,10 +305,17 @@ load_entries(toml_table_t *root, const char *table, int is_user, stnsd_entries_t
 		continue;
 	if (n == 0)
 		return STNSD_OK;
-	if ((out->v = calloc((size_t)n, sizeof(*out->v))) == NULL) {
+
+	/*
+	 * Appended rather than assigned: with include, one table is built from
+	 * several files, and each of them arrives here in turn.
+	 */
+	if ((grown = realloc(out->v, (out->n + (size_t)n) * sizeof(*out->v))) == NULL) {
 		snprintf(errbuf, errlen, "out of memory");
 		return STNSD_NG;
 	}
+	out->v = grown;
+	memset(out->v + out->n, 0, (size_t)n * sizeof(*out->v));
 
 	for (i = 0; (name = toml_key_in(parent, (int)i)) != NULL; i++) {
 		toml_table_t *tab = toml_table_in(parent, name);
@@ -260,18 +324,33 @@ load_entries(toml_table_t *root, const char *table, int is_user, stnsd_entries_t
 			snprintf(errbuf, errlen, "[%s.%s] is not a table", table, name);
 			return STNSD_NG;
 		}
-		if (load_entry(tab, name, &out->v[i], is_user, errbuf, errlen) != STNSD_OK) {
-			out->n = i + 1;
+		if (load_entry(tab, name, &out->v[out->n], is_user, errbuf, errlen) != STNSD_OK) {
+			out->n++;
 			return STNSD_NG;
 		}
-		out->n = i + 1;
+		out->n++;
 	}
+	return STNSD_OK;
+}
 
-	/*
-	 * Upstream refuses to start on a duplicate id, and it is right to: two
-	 * accounts sharing a uid is not a configuration anyone meant to write,
-	 * and which of them a lookup by id returns would be luck.
-	 */
+/*
+ * Once every file has been read: refuse the contradictions, resolve the links
+ * and work out the id range.
+ *
+ * This waits for the last file because include means an entry in one file can
+ * link to an entry in another, and because a duplicate is a duplicate whichever
+ * file each half came from.  Upstream refuses a duplicate id and is right to:
+ * two accounts sharing a uid is not a configuration anyone meant to write, and
+ * which of them a lookup by id returns would be luck.  A duplicate name it
+ * would silently keep the last of, having read them into a map; here that is
+ * an error too, because one account definition quietly replacing another is
+ * worse than being told.
+ */
+static int
+finalise_entries(stnsd_entries_t *out, const char *table, char *errbuf, size_t errlen)
+{
+	size_t i, j;
+
 	for (i = 0; i < out->n; i++) {
 		for (j = i + 1; j < out->n; j++) {
 			if (out->v[i].id == out->v[j].id) {
@@ -279,9 +358,12 @@ load_entries(toml_table_t *root, const char *table, int is_user, stnsd_entries_t
 				    table, out->v[i].name, table, out->v[j].name);
 				return STNSD_NG;
 			}
+			if (strcmp(out->v[i].name, out->v[j].name) == 0) {
+				snprintf(errbuf, errlen, "[%s.%s] is defined twice", table, out->v[i].name);
+				return STNSD_NG;
+			}
 		}
 	}
-
 	stnsd_link_merge(out);
 	stnsd_compute_id_range(out);
 	return STNSD_OK;
@@ -298,9 +380,6 @@ free_entries(stnsd_entries_t *e)
 	memset(e, 0, sizeof(*e));
 }
 
-static const char *const root_keys[] = {
-	"port", "listen", "users", "groups", "basic_auth", "token_auth", "tls", NULL
-};
 static const char *const basic_keys[] = { "user", "password", NULL };
 static const char *const token_keys[] = { "tokens", NULL };
 static const char *const tls_keys[] = { "cert", "key", "ca", NULL };
@@ -313,19 +392,71 @@ static const char *const tls_keys[] = { "cert", "key", "ca", NULL };
  * this is the moment an administrator is watching, and "stnsd -t" exists so
  * that the moment can be arranged before a reload.
  */
-int
-stnsd_config_load(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen)
+static int load_file(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen, int depth);
+
+/*
+ * include: read another file, or every file a pattern matches, into the same
+ * configuration.
+ *
+ * A relative path is taken from the directory of the file that named it, which
+ * is what makes a conf.d next to stns.conf work.  A pattern that matches
+ * nothing is fine -- an empty conf.d is a normal state of affairs -- but a
+ * plain path that is not there is a mistake worth stopping for, since somebody
+ * meant to include something.
+ */
+static int
+load_include(const char *including, const char *pattern, stnsd_conf_t *c, char *errbuf, size_t errlen, int depth)
+{
+	char resolved[PATH_MAX];
+	char dirbuf[PATH_MAX];
+	glob_t g;
+	size_t i;
+	int rc = STNSD_OK;
+
+	if (depth >= MAX_INCLUDE_DEPTH) {
+		snprintf(errbuf, errlen, "include is more than %d deep at %s; a loop?", MAX_INCLUDE_DEPTH, pattern);
+		return STNSD_NG;
+	}
+
+	if (pattern[0] == '/') {
+		(void)strlcpy(resolved, pattern, sizeof(resolved));
+	} else {
+		(void)strlcpy(dirbuf, including, sizeof(dirbuf));
+		(void)snprintf(resolved, sizeof(resolved), "%s/%s", dirname(dirbuf), pattern);
+	}
+
+	memset(&g, 0, sizeof(g));
+	switch (glob(resolved, 0, NULL, &g)) {
+	case 0:
+		break;
+	case GLOB_NOMATCH:
+		globfree(&g);
+		if (strpbrk(pattern, "*?[") != NULL)
+			return STNSD_OK;
+		snprintf(errbuf, errlen, "include %s matches nothing", resolved);
+		return STNSD_NG;
+	default:
+		globfree(&g);
+		snprintf(errbuf, errlen, "include %s could not be expanded", resolved);
+		return STNSD_NG;
+	}
+
+	for (i = 0; i < g.gl_pathc; i++) {
+		if ((rc = load_file(g.gl_pathv[i], c, errbuf, errlen, depth + 1)) != STNSD_OK)
+			break;
+	}
+	globfree(&g);
+	return rc;
+}
+
+static int
+load_file(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen, int depth)
 {
 	char parse_error[200];
+	char *include = NULL;
 	toml_table_t *root, *tab;
 	FILE *fp;
 	int rc = STNSD_NG;
-
-	memset(c, 0, sizeof(*c));
-	if ((c->path = dup_str(path)) == NULL) {
-		snprintf(errbuf, errlen, "out of memory");
-		return STNSD_NG;
-	}
 
 	if ((fp = fopen(path, "r")) == NULL) {
 		snprintf(errbuf, errlen, "cannot open %s: %s", path, strerror(errno));
@@ -340,7 +471,8 @@ stnsd_config_load(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen
 
 	if (reject_unknown(root, root_keys, errbuf, errlen, "") != STNSD_OK)
 		goto out_toml;
-	if (conf_int(root, "port", &c->port, STNSD_DEFAULT_PORT, errbuf, errlen, "") != STNSD_OK)
+	if (conf_int(root, "port", &c->port, c->port != 0 ? c->port : STNSD_DEFAULT_PORT, errbuf, errlen,
+	    "") != STNSD_OK)
 		goto out_toml;
 	if (c->port <= 0 || c->port > 65535) {
 		snprintf(errbuf, errlen, "port %d is out of range", c->port);
@@ -404,19 +536,84 @@ stnsd_config_load(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen
 		}
 	}
 
+	/*
+	 * allow_ips is parsed here rather than at the first connection: a
+	 * netmask nobody can parse should stop the server, not quietly refuse
+	 * every client once it is running.
+	 */
+	{
+		char **text = NULL;
+		size_t ntext = 0, i;
+
+		if (conf_strings(root, "allow_ips", &text, &ntext, NULL, errbuf, errlen, "") != STNSD_OK)
+			goto out_toml;
+		for (i = 0; i < ntext; i++) {
+			stnsd_cidr_t *grown = realloc(c->allow, (c->nallow + 1) * sizeof(*grown));
+
+			if (grown == NULL) {
+				stnsd_strings_free(text, ntext);
+				snprintf(errbuf, errlen, "out of memory");
+				goto out_toml;
+			}
+			c->allow = grown;
+			if (stnsd_cidr_parse(text[i], &c->allow[c->nallow]) != STNSD_OK) {
+				snprintf(errbuf, errlen, "allow_ips: %s is not an address or a network", text[i]);
+				stnsd_strings_free(text, ntext);
+				goto out_toml;
+			}
+			c->nallow++;
+		}
+		stnsd_strings_free(text, ntext);
+	}
+
+	if (conf_bool(root, "use_server_starter", &c->use_server_starter, errbuf, errlen, "") != STNSD_OK)
+		goto out_toml;
+
 	if (load_entries(root, "users", 1, &c->users, errbuf, errlen) != STNSD_OK)
 		goto out_toml;
 	if (load_entries(root, "groups", 0, &c->groups, errbuf, errlen) != STNSD_OK)
+		goto out_toml;
+
+	if (conf_str(root, "include", &include, errbuf, errlen, "") != STNSD_OK)
 		goto out_toml;
 
 	rc = STNSD_OK;
 
 out_toml:
 	toml_free(root);
+	/*
+	 * The include is followed after this file is closed and its table
+	 * freed, so a deep chain costs one parser at a time.
+	 */
+	if (rc == STNSD_OK && include != NULL)
+		rc = load_include(path, include, c, errbuf, errlen, depth);
+	free(include);
 out:
-	if (rc != STNSD_OK)
-		stnsd_config_free(c);
 	return rc;
+}
+
+/*
+ * Read the configuration: the named file, whatever it includes, and then the
+ * checks that can only be made once all of it is in.
+ *
+ * On failure nothing is left allocated and the caller must not call
+ * stnsd_config_free().
+ */
+int
+stnsd_config_load(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen)
+{
+	memset(c, 0, sizeof(*c));
+	if ((c->path = dup_str(path)) == NULL) {
+		snprintf(errbuf, errlen, "out of memory");
+		return STNSD_NG;
+	}
+	if (load_file(path, c, errbuf, errlen, 0) != STNSD_OK ||
+	    finalise_entries(&c->users, "users", errbuf, errlen) != STNSD_OK ||
+	    finalise_entries(&c->groups, "groups", errbuf, errlen) != STNSD_OK) {
+		stnsd_config_free(c);
+		return STNSD_NG;
+	}
+	return STNSD_OK;
 }
 
 void
@@ -430,6 +627,7 @@ stnsd_config_free(stnsd_conf_t *c)
 	free(c->tls_key);
 	free(c->tls_ca);
 	stnsd_strings_free(c->tokens, c->ntokens);
+	free(c->allow);
 	free_entries(&c->users);
 	free_entries(&c->groups);
 	memset(c, 0, sizeof(*c));

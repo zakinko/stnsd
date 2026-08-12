@@ -13,6 +13,22 @@
 port = 1104
 #listen = "127.0.0.1:1104"
 
+# Read more files into this one.  A relative path is taken from the directory
+# of the file naming it, and a pattern is expanded, so an empty conf.d is a
+# perfectly ordinary state of affairs -- but a plain path that is not there is
+# an error, since somebody meant to include something.
+#include = "conf.d/*.conf"
+
+# Who may connect at all.  Absent, everybody may; present, only these.  The
+# list is checked against the address the connection came from, before the TLS
+# handshake -- which also means a health check has to be in it.
+#allow_ips = ["10.0.0.0/8", "192.168.1.5", "2001:db8::/32", "::1"]
+
+# Take the listening sockets from a supervisor (Server::Starter and the like)
+# through SERVER_STARTER_PORT, instead of binding them.  For restarts that keep
+# the socket open; the server refuses to start if no supervisor handed it one.
+#use_server_starter = false
+
 # Authentication.  Either is optional and both may be given, in which case
 # either satisfies the server.  /v1/status and / never require credentials, so
 # that a health check does not need one.

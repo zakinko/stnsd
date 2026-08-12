@@ -11,7 +11,11 @@
  * duplicate id, an id of zero, a key of the wrong type -- where the right
  * behaviour is to refuse to start rather than to serve something surprising.
  */
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #include <errno.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "stnsd.h"
@@ -41,6 +45,20 @@ eq_str(const char *got, const char *want, const char *what)
 		failures++;
 		(void)printf("FAIL - %s\n       expected: %s\n       actual:   %s\n", what, want,
 		    got == NULL ? "(null)" : got);
+	}
+}
+
+/* contains_str <haystack> <needle> <what> */
+static void
+contains_str(const char *haystack, const char *needle, const char *what)
+{
+	checks++;
+	if (haystack != NULL && strstr(haystack, needle) != NULL) {
+		(void)printf("ok   - %s\n", what);
+	} else {
+		failures++;
+		(void)printf("FAIL - %s\n       expected to contain: %s\n       actual: %s\n", what, needle,
+		    haystack == NULL ? "(null)" : haystack);
 	}
 }
 
@@ -310,6 +328,238 @@ test_strings(void)
 	stnsd_strings_free(vec, n);
 }
 
+/* A sockaddr for a printed address, so the matcher can be asked about it. */
+static struct sockaddr_storage
+peer(const char *text)
+{
+	struct sockaddr_storage ss;
+
+	memset(&ss, 0, sizeof(ss));
+	if (strchr(text, ':') != NULL) {
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)(void *)&ss;
+
+		sin6->sin6_family = AF_INET6;
+		if (inet_pton(AF_INET6, text, &sin6->sin6_addr) != 1)
+			(void)printf("FAIL - the test itself cannot parse %s\n", text);
+	} else {
+		struct sockaddr_in *sin = (struct sockaddr_in *)(void *)&ss;
+
+		sin->sin_family = AF_INET;
+		if (inet_pton(AF_INET, text, &sin->sin_addr) != 1)
+			(void)printf("FAIL - the test itself cannot parse %s\n", text);
+	}
+	return ss;
+}
+
+/* matches <rule> <address> - 1 if the rule covers the address. */
+static int
+matches(const char *rule, const char *address)
+{
+	struct sockaddr_storage ss = peer(address);
+	stnsd_cidr_t c;
+
+	if (stnsd_cidr_parse(rule, &c) != STNSD_OK) {
+		(void)printf("FAIL - %s did not parse\n", rule);
+		return -1;
+	}
+	return stnsd_cidr_match(&c, (const struct sockaddr *)(const void *)&ss);
+}
+
+static void
+test_allow_ips(void)
+{
+	stnsd_cidr_t c;
+
+	(void)printf("\n== allow_ips: addresses and networks ==\n");
+
+	ok(matches("10.0.0.0/8", "10.1.2.3") == 1, "a v4 network covers an address inside it");
+	ok(matches("10.0.0.0/8", "11.0.0.1") == 0, "and not one outside it");
+	ok(matches("192.168.1.5", "192.168.1.5") == 1, "a bare v4 address matches itself");
+	ok(matches("192.168.1.5", "192.168.1.6") == 0, "and nothing else");
+	ok(matches("0.0.0.0/0", "203.0.113.9") == 1, "/0 covers everything");
+	/* A prefix that stops mid-byte is where an off-by-one would show. */
+	ok(matches("192.168.0.0/23", "192.168.1.255") == 1, "a /23 covers the second half of its range");
+	ok(matches("192.168.0.0/23", "192.168.2.1") == 0, "and stops where it should");
+	ok(matches("10.0.0.0/31", "10.0.0.1") == 1, "a /31 covers both of its addresses");
+	ok(matches("10.0.0.0/31", "10.0.0.2") == 0, "and no more");
+
+	(void)printf("\n== allow_ips: the several ways to write IPv6 ==\n");
+
+	ok(matches("::1", "::1") == 1, "the loopback matches itself");
+	ok(matches("::1", "::2") == 0, "and not its neighbour");
+	/* The same address, written four ways, against one rule. */
+	ok(matches("2001:db8::1", "2001:db8::1") == 1, "compressed against compressed");
+	ok(matches("2001:db8::1", "2001:0db8:0000:0000:0000:0000:0000:0001") == 1,
+	    "compressed against the fully written form");
+	ok(matches("2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1") == 1,
+	    "upper case hex against lower");
+	ok(matches("2001:db8:0:0:0:0:0:1", "2001:db8::1") == 1, "zeroes written out against zeroes elided");
+
+	ok(matches("2001:db8::/32", "2001:db8:1234:5678::9") == 1, "a v6 network covers an address inside it");
+	ok(matches("2001:db8::/32", "2001:db9::1") == 0, "and not one outside it");
+	ok(matches("fe80::/10", "fe80::1") == 1, "link local covers a link local address");
+	ok(matches("fe80::/10", "fec0::1") == 0, "and not one just past the prefix");
+	ok(matches("::/0", "2001:db8::1") == 1, "::/0 covers every v6 address");
+	ok(matches("2001:db8::1/128", "2001:db8::1") == 1, "a /128 is one address");
+	ok(matches("2001:db8::1/128", "2001:db8::2") == 0, "and only that one");
+
+	/*
+	 * A v4 client arriving on a v6 socket is written ::ffff:10.0.0.1, and a
+	 * rule about the v4 network has to recognise it.  IPV6_V6ONLY means we
+	 * should not see one, which is exactly why it is worth a test.
+	 */
+	ok(matches("10.0.0.0/8", "::ffff:10.0.0.1") == 1, "a v4-mapped address is matched by the v4 rule");
+	ok(matches("::ffff:10.0.0.1", "::ffff:10.0.0.1") == 1, "or by a v4-mapped rule");
+	ok(matches("::ffff:10.0.0.1", "10.0.0.1") == 1, "which is the same rule as the v4 one");
+	ok(matches("::ffff:10.0.0.0/104", "10.1.2.3") == 1, "a mapped network is the v4 network it describes");
+	ok(matches("10.0.0.0/8", "::1") == 0, "a v4 rule does not cover a v6 address");
+	ok(matches("::/0", "10.0.0.1") == 0, "and a v6 rule does not cover a v4 one");
+
+	(void)printf("\n== allow_ips: what is not an address ==\n");
+
+	ok(stnsd_cidr_parse("10.0.0.0/33", &c) != STNSD_OK, "a v4 prefix over 32 is refused");
+	ok(stnsd_cidr_parse("2001:db8::/129", &c) != STNSD_OK, "a v6 prefix over 128 is refused");
+	ok(stnsd_cidr_parse("10.0.0.0/-1", &c) != STNSD_OK, "a negative prefix is refused");
+	ok(stnsd_cidr_parse("10.0.0.0/", &c) != STNSD_OK, "an empty prefix is refused");
+	ok(stnsd_cidr_parse("10.0.0.256", &c) != STNSD_OK, "a byte over 255 is refused");
+	ok(stnsd_cidr_parse("2001:db8:::1", &c) != STNSD_OK, "a doubled elision is refused");
+	ok(stnsd_cidr_parse("not an address", &c) != STNSD_OK, "and so is prose");
+	ok(stnsd_cidr_parse("10.0.0.0/8/8", &c) != STNSD_OK, "as is a second prefix");
+}
+
+/* write <dir> <name> <body> - a file inside a directory the test owns. */
+static void
+write_file(const char *dir, const char *name, const char *body)
+{
+	char path[512];
+	FILE *fp;
+
+	(void)snprintf(path, sizeof(path), "%s/%s", dir, name);
+	if ((fp = fopen(path, "w")) == NULL) {
+		(void)printf("FAIL - cannot write %s\n", path);
+		return;
+	}
+	(void)fputs(body, fp);
+	(void)fclose(fp);
+}
+
+static void
+test_include(void)
+{
+	char dir[] = "/tmp/stnsd_include.XXXXXX";
+	char main_conf[512], sub[512];
+	char err[512];
+	stnsd_conf_t c;
+
+	(void)printf("\n== include ==\n");
+
+	if (mkdtemp(dir) == NULL) {
+		ok(0, "a temporary directory for the include tests");
+		return;
+	}
+	(void)snprintf(sub, sizeof(sub), "%s/conf.d", dir);
+	(void)mkdir(sub, 0755);
+	(void)snprintf(main_conf, sizeof(main_conf), "%s/stns.conf", dir);
+
+	/* A relative include is taken from the directory of the file naming it. */
+	write_file(dir, "stns.conf", "port = 2000\ninclude = \"conf.d/*.conf\"\n[users.alice]\nid = 1\n");
+	write_file(sub, "bob.conf", "[users.bob]\nid = 2\n");
+	write_file(sub, "ops.conf", "[groups.ops]\nid = 10\nusers = [\"alice\", \"bob\"]\n");
+	write_file(sub, "ignored.txt", "this is not TOML at all\n");
+
+	ok(stnsd_config_load(main_conf, &c, err, sizeof(err)) == STNSD_OK, "a glob include loads");
+	ok(c.users.n == 2, "users from both files are there");
+	ok(stnsd_find_by_name(&c.users, "alice") != NULL && stnsd_find_by_name(&c.users, "bob") != NULL,
+	    "and they are the right two");
+	ok(c.groups.n == 1, "so is the group from the third file");
+	ok(c.port == 2000, "a setting in the including file survives");
+	/* The pattern is *.conf, so the .txt is not read -- and it is not TOML. */
+	ok(c.users.highest_id == 2 && c.users.lowest_id == 1, "the id range spans every file");
+	stnsd_config_free(&c);
+
+	/* Links across files are why the merge waits for the last one. */
+	write_file(dir, "stns.conf", "include = \"conf.d/*.conf\"\n[users.alice]\nid = 1\nkeys = [\"kA\"]\n");
+	write_file(sub, "bob.conf", "[users.bob]\nid = 2\nlink_users = [\"alice\"]\n");
+	write_file(sub, "ops.conf", "[groups.ops]\nid = 10\n");
+	ok(stnsd_config_load(main_conf, &c, err, sizeof(err)) == STNSD_OK, "an entry may link across files");
+	{
+		const stnsd_entry_t *e = stnsd_find_by_name(&c.users, "bob");
+
+		ok(e != NULL && e->nvalues == 1 && strcmp(e->values[0], "kA") == 0,
+		    "and the merge finds it, because it waits for every file");
+	}
+	stnsd_config_free(&c);
+
+	/* Two files defining the same account is a mistake, not a merge. */
+	write_file(sub, "bob.conf", "[users.alice]\nid = 9\n");
+	ok(stnsd_config_load(main_conf, &c, err, sizeof(err)) != STNSD_OK,
+	    "the same name in two files is refused");
+	write_file(sub, "bob.conf", "[users.bob]\nid = 1\n");
+	ok(stnsd_config_load(main_conf, &c, err, sizeof(err)) != STNSD_OK,
+	    "and so is the same id in two files");
+
+	/* An empty conf.d is ordinary; a named file that is missing is not. */
+	write_file(dir, "stns.conf", "include = \"conf.d/nothing-*.conf\"\n[users.alice]\nid = 1\n");
+	ok(stnsd_config_load(main_conf, &c, err, sizeof(err)) == STNSD_OK,
+	    "a pattern matching nothing is not an error");
+	stnsd_config_free(&c);
+	write_file(dir, "stns.conf", "include = \"conf.d/absent.conf\"\n[users.alice]\nid = 1\n");
+	ok(stnsd_config_load(main_conf, &c, err, sizeof(err)) != STNSD_OK,
+	    "but a named file that is not there is");
+
+	/* A file that includes itself must stop rather than spin. */
+	write_file(dir, "stns.conf", "include = \"stns.conf\"\n[users.alice]\nid = 1\n");
+	ok(stnsd_config_load(main_conf, &c, err, sizeof(err)) != STNSD_OK, "a self include is caught");
+	contains_str(err, "loop", "and the message says what it looks like");
+
+	(void)unlink(main_conf);
+	(void)snprintf(main_conf, sizeof(main_conf), "%s/conf.d/bob.conf", dir);
+	(void)unlink(main_conf);
+	(void)snprintf(main_conf, sizeof(main_conf), "%s/conf.d/ops.conf", dir);
+	(void)unlink(main_conf);
+	(void)snprintf(main_conf, sizeof(main_conf), "%s/conf.d/ignored.txt", dir);
+	(void)unlink(main_conf);
+	(void)rmdir(sub);
+	(void)rmdir(dir);
+}
+
+static void
+test_unsupported(void)
+{
+	char err[512];
+	stnsd_conf_t c;
+
+	(void)printf("\n== the keys upstream has and this does not ==\n");
+
+	/*
+	 * These have to be refused by name.  "unknown key" would be untrue and
+	 * would send somebody hunting for a typo that is not there.
+	 */
+	ok(!load("load_module = \"mod_stns_etcd.so\"\n", &c, err, sizeof(err)), "load_module is refused");
+	contains_str(err, "plugin", "and the message says it is a plugin");
+	ok(!load("[redis]\nhost = \"localhost\"\n", &c, err, sizeof(err)), "[redis] is refused");
+	contains_str(err, "Redis", "by name");
+	ok(!load("[modules.etcd]\nendpoints = []\n", &c, err, sizeof(err)), "[modules] is refused");
+	contains_str(err, "plugin", "as a plugin backend");
+	ok(!load("[ldap]\nbase_dn = \"dc=example\"\n", &c, err, sizeof(err)), "[ldap] is refused");
+	contains_str(err, "LDAP", "by name");
+	ok(!load("module_path = \"/usr/local/stns\"\n", &c, err, sizeof(err)), "module_path is refused");
+
+	/* And the keys we do now support must load. */
+	ok(load("use_server_starter = true\n[users.a]\nid = 1\n", &c, err, sizeof(err)) && c.use_server_starter,
+	    "use_server_starter loads");
+	stnsd_config_free(&c);
+	ok(!load("use_server_starter = \"yes\"\n", &c, err, sizeof(err)),
+	    "and is a boolean, not a string that looks like one");
+
+	ok(load("allow_ips = [\"10.0.0.0/8\", \"::1\"]\n[users.a]\nid = 1\n", &c, err, sizeof(err)) &&
+	    c.nallow == 2, "allow_ips loads");
+	stnsd_config_free(&c);
+	ok(!load("allow_ips = [\"10.0.0.0/8\", \"garbage\"]\n", &c, err, sizeof(err)),
+	    "and one bad entry stops the server rather than every client");
+	contains_str(err, "garbage", "naming the entry it could not read");
+}
+
 int
 main(void)
 {
@@ -318,6 +568,9 @@ main(void)
 	test_json();
 	test_base64();
 	test_strings();
+	test_allow_ips();
+	test_include();
+	test_unsupported();
 
 	(void)printf("\n%d checks, %d failures\n", checks, failures);
 	return failures == 0 ? 0 : 1;

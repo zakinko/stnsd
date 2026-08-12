@@ -13,6 +13,7 @@
 set -u
 
 STNSD=${1:-./stnsd}
+STARTER=${STARTER:-./starter}
 PORT=${PORT:-11114}
 SRCDIR=$(cd "$(dirname "$0")/.." && pwd)
 WORK=${WORK:-/tmp/stnsd_functional.$$}
@@ -234,6 +235,83 @@ start_server
 garbage=$(printf 'not http at all\r\n\r\n' | nc 127.0.0.1 $PORT 2>/dev/null | head -1)
 contains "is answered with 400 rather than a crash" "400" "$garbage"
 expect "and the server is still serving" "200" "$(status_of '/v1/users?name=alice')"
+
+echo
+echo "== allow_ips =="
+# 127.0.0.1 is deliberately not in this list, so the server should take the
+# connection and drop it without a word.
+# A key appended after the tables would belong to the last of them, so the
+# root keys go in front -- which is where TOML wants them anyway.
+{ printf 'allow_ips = ["10.0.0.0/8", "2001:db8::/32"]\n'
+  sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf"; } > "$WORK/deny.conf"
+contains "-t counts the allow_ips entries" "2 allow_ips entries" \
+	"$("$STNSD" -t -c "$WORK/deny.conf" 2>&1 || true)"
+stop_server
+"$STNSD" -f -v -c "$WORK/deny.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+sleep 1
+denies "an address outside allow_ips gets nothing" \
+	curl -sf -m 5 -o /dev/null "http://127.0.0.1:$PORT/v1/status"
+contains "and the refusal is logged" "not in allow_ips" "$(cat "$WORK/stnsd.log")"
+
+# The same file with the loopback added, which is the only difference.
+{ printf 'allow_ips = ["127.0.0.1", "::1"]\n'
+  sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf"; } > "$WORK/allow.conf"
+stop_server
+"$STNSD" -f -c "$WORK/allow.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+expect "an address inside it is served" "200" "$(status_of '/v1/users?name=alice')"
+
+echo
+echo "== include =="
+mkdir -p "$WORK/conf.d"
+{ printf 'include = "conf.d/*.conf"\n'
+  sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf"; } > "$WORK/inc.conf"
+cat > "$WORK/conf.d/extra.conf" <<'INCEOF'
+[users.grace]
+id = 1100
+group_id = 1001
+shell = "/bin/ksh"
+INCEOF
+contains "-t counts the users from every file" "6 users" \
+	"$("$STNSD" -t -c "$WORK/inc.conf" 2>&1 || true)"
+stop_server
+"$STNSD" -f -c "$WORK/inc.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+contains "a user from the included file is served" '"shell":"/bin/ksh"' \
+	"$(curl -s "http://127.0.0.1:$PORT/v1/users?name=grace")"
+expect "and one from the including file still is" "200" "$(status_of '/v1/users?name=alice')"
+contains "the id range covers both files" "User-Highest-Id: 1100" \
+	"$(curl -sD - -o /dev/null "http://127.0.0.1:$PORT/v1/users?name=alice")"
+
+echo
+echo "== use_server_starter =="
+{ printf 'use_server_starter = true\n'
+  sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf"; } > "$WORK/starter.conf"
+# Without a supervisor there is no socket to inherit, and pretending otherwise
+# would mean listening on nothing at all.
+if "$STNSD" -f -c "$WORK/starter.conf" >/dev/null 2>&1; then
+	fail "use_server_starter without a supervisor is refused"
+else
+	ok "use_server_starter without a supervisor is refused"
+fi
+contains "and says what is missing" "SERVER_STARTER_PORT" \
+	"$("$STNSD" -f -c "$WORK/starter.conf" 2>&1 || true)"
+
+if [ -x "$STARTER" ]; then
+	stop_server
+	# The socket is bound by the stand-in and inherited across the exec, so
+	# a server that ignored the environment would fail to bind at all.
+	"$STARTER" "127.0.0.1:$PORT" "$STNSD" -f -c "$WORK/starter.conf" > "$WORK/stnsd.log" 2>&1 &
+	server_pid=$!
+	wait_for_port
+	expect "a server handed its socket serves on it" "200" "$(status_of '/v1/users?name=alice')"
+	contains "and says where the socket came from" "from the supervisor" "$(cat "$WORK/stnsd.log")"
+else
+	echo "skip - no $STARTER built to stand in for Server::Starter"
+fi
 
 echo
 echo "== TLS =="

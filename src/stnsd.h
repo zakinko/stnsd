@@ -13,6 +13,7 @@
 #define STNSD_H
 
 #include <sys/types.h>
+#include <sys/socket.h>
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -62,6 +63,16 @@ typedef struct {
 	int fd;
 	void *ssl;		/* SSL *, or NULL on a plain connection */
 } stnsd_conn_t;
+
+/*
+ * One entry of allow_ips: an address and how many of its leading bits must
+ * match.  A bare address is simply a prefix of every bit.
+ */
+typedef struct {
+	int family;			/* AF_INET or AF_INET6 */
+	unsigned char addr[16];
+	int prefix;			/* bits that must match */
+} stnsd_cidr_t;
 
 /*
  * A growable byte buffer.  Every response body is built in one of these, and
@@ -131,6 +142,13 @@ typedef struct {
 	char *tls_ca;
 	void *tls_ctx;		/* SSL_CTX *, built once before any fork */
 
+	/* allow_ips: who may connect at all.  Empty means everyone. */
+	stnsd_cidr_t *allow;
+	size_t nallow;
+
+	/* use_server_starter: the listening sockets are inherited, not bound. */
+	int use_server_starter;
+
 	stnsd_entries_t users;
 	stnsd_entries_t groups;
 } stnsd_conf_t;
@@ -157,6 +175,12 @@ void stnsd_buf_printf(stnsd_buf_t *b, const char *fmt, ...);
 void stnsd_json_string(stnsd_buf_t *b, const char *s);
 void stnsd_json_user(stnsd_buf_t *b, const stnsd_entry_t *u);
 void stnsd_json_group(stnsd_buf_t *b, const stnsd_entry_t *g);
+
+/* acl.c */
+int stnsd_cidr_parse(const char *text, stnsd_cidr_t *out);
+int stnsd_cidr_match(const stnsd_cidr_t *c, const struct sockaddr *sa);
+int stnsd_allowed(const stnsd_conf_t *c, const struct sockaddr *sa);
+const char *stnsd_addr_text(const struct sockaddr *sa, char *buf, size_t buflen);
 
 /* tls.c */
 int stnsd_tls_setup(stnsd_conf_t *c, char *errbuf, size_t errlen);

@@ -45,8 +45,17 @@ byte for byte — including the parts nobody would think to write down:
 - `{}` for a lookup that found nothing, `{"message":"Not Found"}` for a path
   that does not exist — one is STNS's error type, the other is the router's
 
-44 comparisons pass, six of them over TLS, which upstream serves from the
-same two configuration keys. Two disagreements are deliberate and listed in
+44 comparisons pass, six of them over TLS, which upstream serves from the same
+two configuration keys.
+
+One divergence is deliberate and worth stating plainly. Upstream applies
+`allow_ips` per request, to the address echo calls `RealIP` — which is the
+`X-Forwarded-For` header when there is one, so a client can choose what it
+appears to be. Here the list is applied to the peer address of the connection,
+before the TLS handshake and before the fork: no header talks its way past, and
+a stranger is refused without being handed a session to hold open. The cost is
+that `/v1/status` loses the exemption upstream gives it, so whoever monitors
+the server belongs in the list. Two disagreements are deliberate and listed in
 [`tests/compat.sh`](tests/compat.sh): upstream's `400` for a malformed id
 quotes the id back in the body, and we do not repeat input into an error; and
 upstream skips authentication entirely whenever the environment variable `CI`
@@ -54,8 +63,10 @@ is set, which we do not copy, because a server that stops checking credentials
 because of an inherited variable is a trap.
 
 What is not implemented: the LDAP interface, the Redis, etcd and DynamoDB
-backends, the password-change endpoint, and `include`, YAML and S3
-configuration. The TOML backend is the one this is for.
+backends, the password-change endpoint, and YAML and S3 configuration. Each of
+those keys is refused **by name** rather than as an unknown one — `[redis]`
+gets "stnsd serves the TOML file only", not "unknown key", because the second
+sends somebody hunting for a typo that is not there.
 
 | | upstream STNS | stnsd |
 | --- | --- | --- |
@@ -65,6 +76,9 @@ configuration. The TOML backend is the one this is for.
 | id range headers | yes | yes |
 | LDAP, Redis, etcd, DynamoDB | yes | no |
 | TLS, and client certificates | yes | yes |
+| `include`, with globs | yes | yes |
+| `allow_ips` | per request, on a header | per connection, on the peer |
+| `use_server_starter` | yes | yes |
 | architectures | where Go runs | where NetBSD runs |
 
 ## Installing
@@ -137,9 +151,12 @@ the work — and buys what is worth buying: a request that goes wrong takes one
 child with it, and the tables are read-only after the fork, shared by copy on
 write, so there is no lock anywhere in the program.
 
-**Everything is decided at start up.** The file is parsed, the links resolved,
-the id range computed, and duplicates and impossible ids refused, before the
-socket is opened. A request does no allocation beyond the response it builds.
+**Everything is decided at start up.** Every file is parsed — the named one and
+whatever it includes — then the links are resolved, the id range computed, and
+duplicates and impossible ids refused, before the socket is opened. An unusable
+netmask in `allow_ips` stops the server there too, rather than quietly refusing
+every client once it is running. A request does no allocation beyond the
+response it builds.
 
 **The parser is deliberately dull.** This process has every password hash in
 its address space. It accepts `GET`, a request line, headers and nothing else;
@@ -182,7 +199,7 @@ serving it in the clear.
 ## Testing
 
 ```sh
-make test       # 60 unit checks, then 40 against the running daemon
+make test       # 124 unit checks, then 52 against the running daemon
 make compat     # 44 answers compared against upstream STNS itself
 make asan       # the unit tests under AddressSanitizer and UBSan
 make external   # the bundled tomlc99 still matches external/MANIFEST

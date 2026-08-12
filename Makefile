@@ -38,6 +38,8 @@ VARBASE?=	/var
 
 PROG=		stnsd
 TEST=		unit_test
+# A stand-in for Server::Starter, used by the functional tests only.
+STARTER=	starter
 
 CC?=		cc
 INSTALL?=	install
@@ -76,7 +78,8 @@ LDFLAGS+=	-L${OPENSSL_PREFIX}/lib -Wl,-rpath,${OPENSSL_PREFIX}/lib
 .  endif
 .endif
 
-CORE_OBJS=	src/config.o \
+CORE_OBJS=	src/acl.o \
+		src/config.o \
 		src/model.o \
 		src/json.o \
 		src/http.o \
@@ -84,7 +87,7 @@ CORE_OBJS=	src/config.o \
 		src/log.o \
 		external/mit/tomlc99/toml.o
 
-OBJS=		${CORE_OBJS} src/main.o tests/unit_test.o
+OBJS=		${CORE_OBJS} src/main.o tests/unit_test.o tests/starter.o
 
 all: ${PROG} rc.d/stnsd
 
@@ -99,6 +102,9 @@ ${PROG}: ${CORE_OBJS} src/main.o
 ${TEST}: ${CORE_OBJS} tests/unit_test.o
 	${CC} -o ${.TARGET} ${CORE_OBJS} tests/unit_test.o ${LDFLAGS} ${LIBS}
 
+${STARTER}: tests/starter.o
+	${CC} -o ${.TARGET} tests/starter.o ${LDFLAGS}
+
 rc.d/stnsd: rc.d/stnsd.in
 	sed -e 's|@PREFIX@|${PREFIX}|g' \
 	    -e 's|@SYSCONFDIR@|${SYSCONFDIR}|g' \
@@ -108,9 +114,9 @@ rc.d/stnsd: rc.d/stnsd.in
 	chmod 755 ${.TARGET}
 
 # The unit tests, then the daemon put through its paces on a real socket.
-test: ${TEST} ${PROG}
+test: ${TEST} ${PROG} ${STARTER}
 	./${TEST}
-	sh ${.CURDIR}/tests/functional.sh ./${PROG}
+	STARTER=./${STARTER} sh ${.CURDIR}/tests/functional.sh ./${PROG}
 
 # The test that decides whether "compatible" is true: the same configuration
 # served by this and by upstream STNS, and every answer compared.  Needs the
@@ -131,7 +137,7 @@ plist: all
 asan:
 	${CC} -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer \
 		${WARNS} ${CPPFLAGS} \
-		src/config.c src/model.c src/json.c src/http.c src/tls.c src/log.c \
+		src/acl.c src/config.c src/model.c src/json.c src/http.c src/tls.c src/log.c \
 		external/mit/tomlc99/toml.c tests/unit_test.c \
 		${LDFLAGS} ${LIBS} -o ${TEST}-asan
 	./${TEST}-asan
@@ -160,7 +166,7 @@ deinstall:
 	rm -f ${DESTDIR}${EXAMPLESDIR}/stns.conf
 
 clean:
-	rm -f ${OBJS} ${PROG} ${TEST} ${TEST}-asan rc.d/stnsd
+	rm -f ${OBJS} ${PROG} ${TEST} ${TEST}-asan ${STARTER} rc.d/stnsd
 
 .PHONY: all test compat external plist asan install install-prog install-rcd \
 	install-conf deinstall clean
