@@ -86,24 +86,27 @@ sends somebody hunting for a typo that is not there.
 
 ### From pkgsrc or ports
 
-Neither collection carries this yet, so the package is dropped into a tree you
-already have. Both fetch the release tarball from github and check it against
-the `distinfo` in [`pkg/`](pkg).
+Neither collection carries this yet, so the packaging is kept in overlays of
+mine — [pkgsrc-zakinko](https://github.com/zakinko/pkgsrc-zakinko) and
+[ports-zakinko](https://github.com/zakinko/ports-zakinko) — and dropped into a
+tree you already have. Both fetch the release tarball from github and check it
+against the `distinfo` there.
 
 ```sh
 # NetBSD, pkgsrc
-cp -R pkg/pkgsrc/security/stnsd /usr/pkgsrc/security/stnsd
-cd /usr/pkgsrc/security/stnsd && make install
+git clone https://github.com/zakinko/pkgsrc-zakinko.git /usr/pkgsrc/zakinko
+cd /usr/pkgsrc/zakinko/stnsd && make install
 
 # FreeBSD or DragonFly, ports
-cp -R pkg/ports/security/stnsd /usr/ports/security/stnsd
+git clone https://github.com/zakinko/ports-zakinko.git /usr/ports-zakinko
+cp -R /usr/ports-zakinko/security/stnsd /usr/ports/security/stnsd
 cd /usr/ports/security/stnsd && make install
 ```
 
 That gives you `sbin/stnsd`, an rc.d script and a sample configuration
 installed root-owned and mode 0600 at `${PKG_SYSCONFDIR}/stns/server/stns.conf`
 — it is where password hashes go. CI builds and installs both packages in a VM
-on every change to `pkg/`, then starts the daemon through rc.d, so this path is
+from those overlays, then starts the daemon through rc.d, so this path is
 tested rather than described.
 
 ### From the source tree

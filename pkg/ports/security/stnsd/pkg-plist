@@ -1,5 +1,0 @@
-sbin/stnsd
-etc/rc.d/stnsd
-@sample share/examples/stnsd/stns.conf etc/stns/server/stns.conf
-@dir etc/stns/server
-@dir etc/stns
