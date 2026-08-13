@@ -16,11 +16,20 @@ STAGE=${STAGE:-/tmp/stnsd_stage}
 # but what was installed into it.
 SCRATCH=${SCRATCH:-/tmp/stnsd_plist}
 
+# The packing lists are not in this repository.  They belong to the packaging,
+# which is kept in its own overlay beside the packaging for everything else,
+# and CI checks the overlays out beside this tree.  Point these at your own
+# clones to run this by hand.
+PKGSRC_OVERLAY=${PKGSRC_OVERLAY:-$SRCDIR/overlay-pkgsrc}
+PORTS_OVERLAY=${PORTS_OVERLAY:-$SRCDIR/overlay-ports}
+
 OS=${OS:-$(uname -s)}
 case "$OS" in
 NetBSD)
 	PREFIX=/usr/pkg
-	PLIST=$SRCDIR/pkg/pkgsrc/security/stnsd/PLIST
+	PLIST=$PKGSRC_OVERLAY/stnsd/PLIST
+	OVERLAY_URL=https://github.com/zakinko/pkgsrc-zakinko.git
+	OVERLAY_DIR=$PKGSRC_OVERLAY
 	# pkgsrc appends the rc.d example to the packing list itself, from
 	# RCD_SCRIPTS, so the PLIST in the tree must not list it -- while the
 	# install being staged here does install it.
@@ -28,7 +37,9 @@ NetBSD)
 	;;
 FreeBSD|DragonFly|MidnightBSD)
 	PREFIX=/usr/local
-	PLIST=$SRCDIR/pkg/ports/security/stnsd/pkg-plist
+	PLIST=$PORTS_OVERLAY/security/stnsd/pkg-plist
+	OVERLAY_URL=https://github.com/zakinko/ports-zakinko.git
+	OVERLAY_DIR=$PORTS_OVERLAY
 	EXTRA=""
 	;;
 *)
@@ -42,6 +53,8 @@ esac
 # sort would swallow awk's exit status, so check before relying on it.
 if [ ! -f "$PLIST" ]; then
 	echo "FAIL - no packing list at $PLIST" >&2
+	echo "the packaging lives in its own repository; clone it beside this tree:" >&2
+	echo "  git clone $OVERLAY_URL $OVERLAY_DIR" >&2
 	exit 1
 fi
 

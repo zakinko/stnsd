@@ -57,6 +57,14 @@ contains() {
 	esac
 }
 
+# lacks <description> <needle> <haystack>
+lacks() {
+	case "$3" in
+	*"$2"*)	fail "$1"; echo "       expected NOT to contain: $2"; echo "       actual: $3" ;;
+	*)	ok "$1" ;;
+	esac
+}
+
 # succeeds <description> <command...>
 succeeds() {
 	desc=$1; shift
@@ -312,6 +320,86 @@ if [ -x "$STARTER" ]; then
 else
 	echo "skip - no $STARTER built to stand in for Server::Starter"
 fi
+
+echo
+echo "== keys from github =="
+# The fetcher is a command that takes a URL and writes the body: here, cat
+# reading a file.  Nothing in this test reaches the network, which is the
+# point -- what is under test is the merging, the caching and the fallback,
+# not whether github is up.
+mkdir -p "$WORK/gh/keys" "$WORK/gh/cache"
+printf 'ssh-ed25519 AAAAGH1 zakinko\nssh-rsa AAAAGH2 zakinko\n' > "$WORK/gh/keys/zakinko"
+cat > "$WORK/gh.conf" <<GHEOF
+port = $PORT
+
+[github]
+url     = "$WORK/gh/keys/%s"
+fetcher = "cat"
+cache   = "$WORK/gh/cache"
+
+[users.alice]
+id     = 1001
+group_id = 1001
+github = "zakinko"
+keys   = ["ssh-ed25519 AAAAOWN alice"]
+
+[users.bob]
+id     = 1002
+group_id = 1001
+github = "zakinko"
+
+[users.carol]
+id     = 1003
+group_id = 1001
+keys   = ["ssh-ed25519 AAAAOWN carol"]
+GHEOF
+
+stop_server
+"$STNSD" -f -c "$WORK/gh.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+
+alice=$(curl -s "http://127.0.0.1:$PORT/v1/users?name=alice")
+contains "a user keeps the key written in the file" "AAAAOWN alice" "$alice"
+contains "and gains the ones from github" "AAAAGH1 zakinko" "$alice"
+contains "all of them" "AAAAGH2 zakinko" "$alice"
+expect "three keys in all" "3" "$(echo "$alice" | tr ',' '\n' | grep -c AAAA)"
+contains "a user with no keys of their own gets github's" "AAAAGH1 zakinko" \
+	"$(curl -s "http://127.0.0.1:$PORT/v1/users?name=bob")"
+lacks "and a user with no github login is left alone" "zakinko" \
+	"$(curl -s "http://127.0.0.1:$PORT/v1/users?name=carol")"
+succeeds "the fetched keys were cached" test -s "$WORK/gh/cache/zakinko"
+
+# With the fetcher failing, the cached copy is what keeps the fleet logging in.
+sed 's|fetcher = "cat"|fetcher = "false"|' "$WORK/gh.conf" > "$WORK/gh-broken.conf"
+stop_server
+"$STNSD" -f -c "$WORK/gh-broken.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+contains "a failed fetch falls back to the cache" "AAAAGH1 zakinko" \
+	"$(curl -s "http://127.0.0.1:$PORT/v1/users?name=alice")"
+contains "and says so" "using the cached keys" "$(cat "$WORK/stnsd.log")"
+
+# Nothing cached and nothing fetched: the keys from the file, and no invention.
+rm -f "$WORK/gh/cache/zakinko"
+stop_server
+"$STNSD" -f -c "$WORK/gh-broken.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+alice=$(curl -s "http://127.0.0.1:$PORT/v1/users?name=alice")
+contains "with neither, the file's own key still serves" "AAAAOWN alice" "$alice"
+lacks "and nothing is invented" "AAAAGH" "$alice"
+
+# A fetcher that answers with something that is not a key -- an error page, a
+# proxy's apology -- must not put it in anybody's authorized_keys.
+printf '<html><body>404 not found</body></html>\n' > "$WORK/gh/keys/zakinko"
+stop_server
+"$STNSD" -f -c "$WORK/gh.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+lacks "an error page is not mistaken for a key" "html" \
+	"$(curl -s "http://127.0.0.1:$PORT/v1/users?name=alice")"
+contains "and it is reported" "nothing that looks like a key" "$(cat "$WORK/stnsd.log")"
 
 echo
 echo "== TLS =="

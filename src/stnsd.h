@@ -43,6 +43,27 @@
 #define STNSD_CONFIG_FILE STNSD_CONFDIR "/stns/server/stns.conf"
 #define STNSD_DEFAULT_PORT 1104
 
+/*
+ * Fetching a user's published keys is left to the system's own client: ftp(1)
+ * is the only thing in NetBSD's base that speaks HTTPS, and fetch(1) is
+ * FreeBSD's.  Both verify certificates unless told otherwise, and both use the
+ * trust this machine has already been given.
+ */
+#ifndef STNSD_GITHUB_FETCHER
+#ifdef __NetBSD__
+#define STNSD_GITHUB_FETCHER "ftp -o -"
+#else
+#define STNSD_GITHUB_FETCHER "fetch -q -o -"
+#endif
+#endif
+#ifndef STNSD_GITHUB_CACHE
+#ifdef __NetBSD__
+#define STNSD_GITHUB_CACHE "/var/db/stnsd/github"
+#else
+#define STNSD_GITHUB_CACHE "/var/cache/stnsd/github"
+#endif
+#endif
+
 /* Bounds, so that a hostile or broken client cannot make us allocate freely. */
 #define STNSD_MAX_REQUEST (16 * 1024)	/* request line and headers together */
 #define STNSD_MAX_HEADERS 64
@@ -107,6 +128,7 @@ typedef struct {
 	size_t nlinks;
 
 	/* Users only.  A group leaves these NULL and group_id 0. */
+	char *github;		/* the login whose published keys are also theirs */
 	char *password;
 	char *directory;
 	char *shell;
@@ -149,6 +171,15 @@ typedef struct {
 	/* use_server_starter: the listening sockets are inherited, not bound. */
 	int use_server_starter;
 
+	/*
+	 * [github]: where a user's published keys are fetched from, and with
+	 * what.  The fetching is done by the system's own client so that its
+	 * idea of which certificates to trust is the one that applies.
+	 */
+	char *github_url;	/* a template with one %s, the login */
+	char *github_fetcher;	/* a command; the URL is appended to it */
+	char *github_cache;	/* directory, or NULL to keep no copy */
+
 	stnsd_entries_t users;
 	stnsd_entries_t groups;
 } stnsd_conf_t;
@@ -175,6 +206,9 @@ void stnsd_buf_printf(stnsd_buf_t *b, const char *fmt, ...);
 void stnsd_json_string(stnsd_buf_t *b, const char *s);
 void stnsd_json_user(stnsd_buf_t *b, const stnsd_entry_t *u);
 void stnsd_json_group(stnsd_buf_t *b, const stnsd_entry_t *g);
+
+/* github.c */
+int stnsd_github_resolve(stnsd_conf_t *c);
 
 /* acl.c */
 int stnsd_cidr_parse(const char *text, stnsd_cidr_t *out);

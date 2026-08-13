@@ -79,6 +79,7 @@ LDFLAGS+=	-L${OPENSSL_PREFIX}/lib -Wl,-rpath,${OPENSSL_PREFIX}/lib
 .endif
 
 CORE_OBJS=	src/acl.o \
+		src/github.o \
 		src/config.o \
 		src/model.o \
 		src/json.o \
@@ -88,6 +89,17 @@ CORE_OBJS=	src/acl.o \
 		external/mit/tomlc99/toml.o
 
 OBJS=		${CORE_OBJS} src/main.o tests/unit_test.o tests/starter.o
+
+# Every object depends on the header, because a struct that changes shape
+# under an object that was not rebuilt is a bug that only appears at run time,
+# in whichever field happens to land on the old offset.  CI never sees it -- it
+# always builds from nothing -- so it is the developer's build that suffers.
+# One line per object: a list of targets sharing a dependency does not reliably
+# give it to all of them.
+.for _obj in ${OBJS}
+${_obj}: ${.CURDIR}/src/stnsd.h
+.endfor
+external/mit/tomlc99/toml.o: ${.CURDIR}/external/mit/tomlc99/toml.h
 
 all: ${PROG} rc.d/stnsd
 
@@ -129,7 +141,9 @@ compat: ${PROG}
 external:
 	sh ${.CURDIR}/tests/check_external.sh
 
-# Stage an install and diff it against the packaging lists under pkg/.
+# Stage an install and diff it against the packing lists, which live in the
+# packaging overlays rather than here.  See tests/check_plist.sh for where it
+# looks for them.
 plist: all
 	sh ${.CURDIR}/tests/check_plist.sh
 
@@ -137,7 +151,8 @@ plist: all
 asan:
 	${CC} -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer \
 		${WARNS} ${CPPFLAGS} \
-		src/acl.c src/config.c src/model.c src/json.c src/http.c src/tls.c src/log.c \
+		src/acl.c src/github.c src/config.c src/model.c src/json.c src/http.c \
+		src/tls.c src/log.c \
 		external/mit/tomlc99/toml.c tests/unit_test.c \
 		${LDFLAGS} ${LIBS} -o ${TEST}-asan
 	./${TEST}-asan

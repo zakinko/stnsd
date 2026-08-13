@@ -149,7 +149,7 @@ conf_strings(toml_table_t *tab, const char *key, char ***vec, size_t *n, int *pr
 
 static const char *const root_keys[] = {
 	"port", "listen", "users", "groups", "basic_auth", "token_auth", "tls",
-	"include", "allow_ips", "use_server_starter", NULL
+	"include", "allow_ips", "use_server_starter", "github", NULL
 };
 
 /*
@@ -172,7 +172,8 @@ static const struct {
 	{ NULL, NULL }
 };
 static const char *const user_keys[] = {
-	"id", "name", "password", "group_id", "directory", "shell", "gecos", "keys", "link_users", NULL
+	"id", "name", "password", "group_id", "directory", "shell", "gecos", "keys", "link_users",
+	"github", NULL
 };
 static const char *const group_keys[] = {
 	"id", "name", "users", "link_groups", NULL
@@ -245,7 +246,8 @@ load_entry(toml_table_t *tab, const char *name, stnsd_entry_t *e, int is_user, c
 	free(ignored);
 
 	if (is_user) {
-		if (conf_str(tab, "password", &e->password, errbuf, errlen, where) != STNSD_OK ||
+		if (conf_str(tab, "github", &e->github, errbuf, errlen, where) != STNSD_OK ||
+		    conf_str(tab, "password", &e->password, errbuf, errlen, where) != STNSD_OK ||
 		    conf_str(tab, "directory", &e->directory, errbuf, errlen, where) != STNSD_OK ||
 		    conf_str(tab, "shell", &e->shell, errbuf, errlen, where) != STNSD_OK ||
 		    conf_str(tab, "gecos", &e->gecos, errbuf, errlen, where) != STNSD_OK)
@@ -271,6 +273,7 @@ static void
 free_entry(stnsd_entry_t *e)
 {
 	free(e->name);
+	free(e->github);
 	free(e->password);
 	free(e->directory);
 	free(e->shell);
@@ -383,6 +386,7 @@ free_entries(stnsd_entries_t *e)
 static const char *const basic_keys[] = { "user", "password", NULL };
 static const char *const token_keys[] = { "tokens", NULL };
 static const char *const tls_keys[] = { "cert", "key", "ca", NULL };
+static const char *const github_keys[] = { "url", "fetcher", "cache", NULL };
 
 /*
  * Read the whole file.  On failure errbuf says what was wrong and nothing is
@@ -569,6 +573,28 @@ load_file(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen, int de
 	if (conf_bool(root, "use_server_starter", &c->use_server_starter, errbuf, errlen, "") != STNSD_OK)
 		goto out_toml;
 
+	/*
+	 * [github].  The fetcher is the system's own client -- ftp(1) here,
+	 * fetch(1) on the others -- because it already knows which certificate
+	 * authorities this machine trusts, and both verify by default.
+	 */
+	if ((tab = toml_table_in(root, "github")) != NULL) {
+		if (reject_unknown(tab, github_keys, errbuf, errlen, "[github] ") != STNSD_OK)
+			goto out_toml;
+		free(c->github_url);
+		free(c->github_fetcher);
+		free(c->github_cache);
+		c->github_url = c->github_fetcher = c->github_cache = NULL;
+		if (conf_str(tab, "url", &c->github_url, errbuf, errlen, "[github] ") != STNSD_OK ||
+		    conf_str(tab, "fetcher", &c->github_fetcher, errbuf, errlen, "[github] ") != STNSD_OK ||
+		    conf_str(tab, "cache", &c->github_cache, errbuf, errlen, "[github] ") != STNSD_OK)
+			goto out_toml;
+		if (c->github_url != NULL && strstr(c->github_url, "%s") == NULL) {
+			snprintf(errbuf, errlen, "[github] url needs a %%s, which is where the login goes");
+			goto out_toml;
+		}
+	}
+
 	if (load_entries(root, "users", 1, &c->users, errbuf, errlen) != STNSD_OK)
 		goto out_toml;
 	if (load_entries(root, "groups", 0, &c->groups, errbuf, errlen) != STNSD_OK)
@@ -593,6 +619,32 @@ out:
 }
 
 /*
+ * What [github] leaves unsaid.  The fetcher differs by platform because the
+ * base systems differ: NetBSD has ftp(1) and nothing else that speaks HTTPS,
+ * FreeBSD and DragonFly have fetch(1).  Both verify certificates unless told
+ * not to, which is the reason to use them rather than to write another client.
+ */
+static int
+set_github_defaults(stnsd_conf_t *c, char *errbuf, size_t errlen)
+{
+	static const struct { const char **field; const char *value; } defaults[] = {
+		{ NULL, NULL }
+	};
+
+	(void)defaults;
+	if (c->github_url == NULL && (c->github_url = dup_str("https://github.com/%s.keys")) == NULL)
+		goto nomem;
+	if (c->github_fetcher == NULL && (c->github_fetcher = dup_str(STNSD_GITHUB_FETCHER)) == NULL)
+		goto nomem;
+	if (c->github_cache == NULL && (c->github_cache = dup_str(STNSD_GITHUB_CACHE)) == NULL)
+		goto nomem;
+	return STNSD_OK;
+nomem:
+	snprintf(errbuf, errlen, "out of memory");
+	return STNSD_NG;
+}
+
+/*
  * Read the configuration: the named file, whatever it includes, and then the
  * checks that can only be made once all of it is in.
  *
@@ -608,6 +660,7 @@ stnsd_config_load(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen
 		return STNSD_NG;
 	}
 	if (load_file(path, c, errbuf, errlen, 0) != STNSD_OK ||
+	    set_github_defaults(c, errbuf, errlen) != STNSD_OK ||
 	    finalise_entries(&c->users, "users", errbuf, errlen) != STNSD_OK ||
 	    finalise_entries(&c->groups, "groups", errbuf, errlen) != STNSD_OK) {
 		stnsd_config_free(c);
@@ -623,6 +676,9 @@ stnsd_config_free(stnsd_conf_t *c)
 	free(c->listen);
 	free(c->basic_user);
 	free(c->basic_password);
+	free(c->github_url);
+	free(c->github_fetcher);
+	free(c->github_cache);
 	free(c->tls_cert);
 	free(c->tls_key);
 	free(c->tls_ca);

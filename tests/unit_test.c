@@ -552,6 +552,28 @@ test_unsupported(void)
 	ok(!load("use_server_starter = \"yes\"\n", &c, err, sizeof(err)),
 	    "and is a boolean, not a string that looks like one");
 
+	(void)printf("\n== keys from github ==\n");
+
+	ok(load("[users.a]\nid = 1\ngithub = \"zakinko\"\n", &c, err, sizeof(err)) &&
+	    c.users.v[0].github != NULL && strcmp(c.users.v[0].github, "zakinko") == 0,
+	    "a user may name a github login");
+	/* The defaults are what makes the key useful without a [github] table. */
+	contains_str(c.github_url, "%s", "the url defaults to a template with the login in it");
+	ok(c.github_fetcher != NULL && c.github_cache != NULL,
+	    "and a fetcher and a cache are chosen for the platform");
+	stnsd_config_free(&c);
+
+	ok(load("[github]\nurl = \"https://ghe.example.com/%s.keys\"\nfetcher = \"curl -fsS\"\n"
+	    "[users.a]\nid = 1\n", &c, err, sizeof(err)), "[github] may name another server and fetcher");
+	eq_str(c.github_fetcher, "curl -fsS", "the fetcher is taken as given");
+	stnsd_config_free(&c);
+
+	ok(!load("[github]\nurl = \"https://github.com/keys\"\n", &c, err, sizeof(err)),
+	    "a url with nowhere to put the login is refused");
+	contains_str(err, "%s", "saying what is missing from it");
+	ok(!load("[github]\ntoken = \"ghp_x\"\n", &c, err, sizeof(err)),
+	    "an unknown key in [github] is refused");
+
 	ok(load("allow_ips = [\"10.0.0.0/8\", \"::1\"]\n[users.a]\nid = 1\n", &c, err, sizeof(err)) &&
 	    c.nallow == 2, "allow_ips loads");
 	stnsd_config_free(&c);

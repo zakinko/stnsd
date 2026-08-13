@@ -302,6 +302,11 @@ main(int argc, char *argv[])
 		stnsd_config_free(&conf);
 		return 1;
 	}
+	/*
+	 * Published keys are fetched here, once, before anything is served --
+	 * never while answering a request.
+	 */
+	(void)stnsd_github_resolve(&conf);
 	if (testonly) {
 		(void)printf("%s: %zu users, %zu groups, port %d, %s", config, conf.users.n, conf.groups.n,
 		    conf.port, conf.tls_ctx != NULL ? (conf.tls_ca != NULL ? "TLS with client certificates" : "TLS")
@@ -382,6 +387,7 @@ main(int argc, char *argv[])
 				stnsd_log(LOG_ERR, "stnsd: reload failed, keeping the running configuration: %s",
 				    errbuf);
 			} else {
+				(void)stnsd_github_resolve(&fresh);
 				stnsd_tls_teardown(&conf);
 				stnsd_config_free(&conf);
 				conf = fresh;

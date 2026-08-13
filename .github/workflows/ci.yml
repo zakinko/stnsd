@@ -10,6 +10,15 @@ on:
     - cron: '23 5 * * 1'
   workflow_dispatch:
 
+env:
+  # "make plist" needs the packing lists, which belong to the packaging and so
+  # live in the overlays rather than here.
+  #
+  #   https://github.com/zakinko/pkgsrc-zakinko
+  #   https://github.com/zakinko/ports-zakinko
+  PKGSRC_OVERLAY_REF: main
+  PORTS_OVERLAY_REF: main
+
 jobs:
   # NetBSD is the platform this exists for, and the only one where the
   # comparison against upstream is run: it needs a Go toolchain in the VM,
@@ -19,6 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zakinko/pkgsrc-zakinko
+          ref: ${{ env.PKGSRC_OVERLAY_REF }}
+          path: overlay-pkgsrc
       - name: Build and test
         uses: vmactions/netbsd-vm@v1
         with:
@@ -61,6 +75,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zakinko/ports-zakinko
+          ref: ${{ env.PORTS_OVERLAY_REF }}
+          path: overlay-ports
       - name: Build and test
         uses: vmactions/freebsd-vm@v1
         with:
@@ -87,6 +106,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zakinko/ports-zakinko
+          ref: ${{ env.PORTS_OVERLAY_REF }}
+          path: overlay-ports
       - name: Build and test
         uses: vmactions/dragonflybsd-vm@v1
         with:

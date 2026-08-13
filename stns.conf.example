@@ -39,6 +39,17 @@ port = 1104
 #user = "stns"
 #password = "secret"
 
+# Keys published on github, fetched when this file is read and never while
+# serving a request.  The fetcher is the system's own client -- ftp(1) here --
+# so that its idea of which certificates to trust is the one that applies; on
+# NetBSD that means security/mozilla-rootcerts has to be installed.  What was
+# fetched is cached, and the cache is used when a fetch fails, so github being
+# unreachable makes the keys old rather than absent.
+#[github]
+#url     = "https://github.com/%s.keys"
+#fetcher = "ftp -o -"
+#cache   = "/var/db/stnsd/github"
+
 # TLS.  cert and key serve HTTPS; adding ca additionally requires the client to
 # present a certificate signed by it, which is worth more than a token here --
 # a token travels with every request, a client certificate stays put.  Half a

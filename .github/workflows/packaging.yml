@@ -10,49 +10,41 @@ on:
     branches: [main]
     tags: ['v*']
     paths:
-      - 'pkg/**'
       - 'Makefile'
       - '.github/workflows/packaging.yml'
   pull_request:
     paths:
-      - 'pkg/**'
       - 'Makefile'
       - '.github/workflows/packaging.yml'
   workflow_dispatch:
 
-jobs:
-  # The packaging cannot live inside the release tarball: each distinfo
-  # records that tarball's checksum, which is only knowable once it exists.
-  # So it is published beside it -- and this is what keeps the published copy
-  # and the tree from drifting apart, which is exactly how an install of the
-  # documented path came to fail while every other job here was green.
-  published:
-    name: published packaging matches the tree
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          set -e
-          V=$(sed -n 's/^DISTNAME=[[:space:]]*stnsd-//p' pkg/pkgsrc/security/stnsd/Makefile)
-          echo "packaging in the tree is for stnsd-$V"
-          url=https://github.com/zakinko/stnsd/releases/download/v$V/stnsd-$V-packaging.tar.gz
-          if ! curl -sfL -o /tmp/pkg.tar.gz "$url"; then
-            echo "FAIL - no packaging published for v$V." >&2
-            echo "       Build it from pkg/ and attach it:" >&2
-            echo "       gh release upload v$V stnsd-$V-packaging.tar.gz" >&2
-            exit 1
-          fi
-          mkdir -p /tmp/pub && tar -C /tmp/pub -xzf /tmp/pkg.tar.gz
-          diff -ru /tmp/pub/pkgsrc pkg/pkgsrc
-          diff -ru /tmp/pub/ports pkg/ports
-          echo "ok - what is published is what is in the tree"
+env:
+  # The packaging is not in this repository: it lives in the overlays, beside
+  # the packaging for everything else.  Pin these to a tag when cutting a
+  # release; main is what says whether the packaging still works today.
+  #
+  #   https://github.com/zakinko/pkgsrc-zakinko
+  #   https://github.com/zakinko/ports-zakinko
+  PKGSRC_OVERLAY_REF: main
+  PORTS_OVERLAY_REF: main
 
+# There used to be a job here checking that the packaging published beside the
+# release -- stnsd-<version>-packaging.tar.gz -- still matched the copy in this
+# tree.  Both copies are gone: the packaging has one home now, the overlay, and
+# an installer clones that instead of downloading a release asset.  What the
+# job was really protecting is still covered, because the builds below fetch
+# the release tarball from github and check it against the overlay's distinfo.
+jobs:
   pkgsrc:
     name: pkgsrc (NetBSD)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zakinko/pkgsrc-zakinko
+          ref: ${{ env.PKGSRC_OVERLAY_REF }}
+          path: overlay-pkgsrc
       - name: Build and install the package
         uses: vmactions/netbsd-vm@v1
         with:
@@ -75,9 +67,13 @@ jobs:
             /usr/sbin/pkg_add pkglint || true
 
             echo "== dropping the package in =="
-            mkdir -p /usr/pkgsrc/security/stnsd
-            cp -R "$WORK"/pkg/pkgsrc/security/stnsd/. /usr/pkgsrc/security/stnsd/
-            cd /usr/pkgsrc/security/stnsd
+            # The whole category goes in, not just this package: pkglint
+            # checks that a package is listed in its category Makefile, and
+            # that its first category is the directory it sits in.
+            mkdir -p /usr/pkgsrc/zakinko
+            (cd "$WORK"/overlay-pkgsrc && tar --exclude .git -cf - .) |
+              (cd /usr/pkgsrc/zakinko && tar -xf -)
+            cd /usr/pkgsrc/zakinko/stnsd
             pkglint .
 
             echo "== build, package, install =="
@@ -127,7 +123,7 @@ jobs:
             fi
 
             echo "== deinstall =="
-            cd /usr/pkgsrc/security/stnsd
+            cd /usr/pkgsrc/zakinko/stnsd
             make deinstall
             test ! -f /usr/pkg/sbin/stnsd
 
@@ -136,6 +132,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zakinko/ports-zakinko
+          ref: ${{ env.PORTS_OVERLAY_REF }}
+          path: overlay-ports
       - name: Build and install the port
         uses: vmactions/freebsd-vm@v1
         with:
@@ -152,7 +153,7 @@ jobs:
 
             echo "== dropping the port in =="
             mkdir -p /usr/ports/security/stnsd
-            cp -R "$WORK"/pkg/ports/security/stnsd/. /usr/ports/security/stnsd/
+            cp -R "$WORK"/overlay-ports/security/stnsd/. /usr/ports/security/stnsd/
             cd /usr/ports/security/stnsd
 
             echo "== stage and check the packing list =="

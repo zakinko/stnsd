@@ -6,3 +6,8 @@
 *.o
 *.core
 *.dSYM/
+
+# Where "make plist" looks for the packing lists: clones of the packaging
+# overlays, which are their own repositories.
+/overlay-pkgsrc/
+/overlay-ports/

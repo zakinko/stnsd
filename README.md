@@ -79,6 +79,7 @@ sends somebody hunting for a typo that is not there.
 | `include`, with globs | yes | yes |
 | `allow_ips` | per request, on a header | per connection, on the peer |
 | `use_server_starter` | yes | yes |
+| keys from github | no | yes |
 | architectures | where Go runs | where NetBSD runs |
 
 ## Installing
@@ -196,10 +197,49 @@ mapped into a process holding every password hash it serves. Such a build
 refuses to start on a configuration that asks for TLS rather than quietly
 serving it in the clear.
 
+## Keys from github
+
+A user may name a github login, and the keys published there are served
+alongside any written out in the file:
+
+```toml
+[users.alice]
+id     = 10001
+github = "zakinko"
+keys   = ["ssh-ed25519 AAAA... a key kept here"]
+```
+
+Doing it here rather than in each client is arithmetic: one machine fetches
+when the configuration is read, instead of every machine fetching at every
+login. Three things about how:
+
+- **The fetch happens at start up and on `HUP`, never while serving.** A
+  directory that must reach github before it can answer is a directory that
+  stops working when github does.
+- **The fetching is done by the system's own client** — `ftp(1)` on NetBSD,
+  `fetch(1)` on FreeBSD and DragonFly — rather than by an HTTPS client of ours.
+  Both verify certificates unless told otherwise, against whatever authorities
+  the machine has been given, so the trust decision stays where the
+  administrator already made it. It also means NetBSD needs a certificate
+  bundle installed (`security/mozilla-rootcerts`) for the fetch to verify, and
+  a fetch that cannot verify fails rather than proceeding.
+- **What was fetched is cached, and the cache is used when a fetch fails.**
+  Github being unreachable means the keys are old, not gone.
+
+```toml
+[github]
+#url     = "https://github.com/%s.keys"   # %s is the login; change it for GHE
+#fetcher = "ftp -o -"                      # the URL is appended to this
+#cache   = "/var/db/stnsd/github"
+```
+
+Anything the fetcher returns that does not begin like an SSH key is discarded
+and reported — an error page is not going into anybody's `authorized_keys`.
+
 ## Testing
 
 ```sh
-make test       # 124 unit checks, then 52 against the running daemon
+make test       # 132 unit checks, then 65 against the running daemon
 make compat     # 44 answers compared against upstream STNS itself
 make asan       # the unit tests under AddressSanitizer and UBSan
 make external   # the bundled tomlc99 still matches external/MANIFEST
