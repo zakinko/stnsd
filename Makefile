@@ -90,18 +90,24 @@ CORE_OBJS=	src/acl.o \
 
 OBJS=		${CORE_OBJS} src/main.o tests/unit_test.o tests/starter.o
 
-# Every object depends on the header, because a struct that changes shape
-# under an object that was not rebuilt is a bug that only appears at run time,
-# in whichever field happens to land on the old offset.  CI never sees it -- it
-# always builds from nothing -- so it is the developer's build that suffers.
-# One line per object: a list of targets sharing a dependency does not reliably
-# give it to all of them.
-.for _obj in ${OBJS}
+all: ${PROG} rc.d/stnsd
+
+# Every object depends on the header, because a struct that changes shape under
+# an object that was not rebuilt is a bug that only appears at run time, in
+# whichever field happens to land on the old offset.  CI never sees it -- it
+# always builds from nothing -- so it is the working tree that suffers.
+#
+# Below "all" and not above it: make takes the first target in the file as the
+# default goal, so writing this at the top quietly turns a bare "make" into
+# "make src/acl.o", which builds one object and reports success.
+#
+# One line per object, and the bundled code left out of it: a list of targets
+# sharing a dependency does not reliably give it to all of them, and external/
+# does not include our header.
+.for _obj in ${OBJS:Nexternal/*}
 ${_obj}: ${.CURDIR}/src/stnsd.h
 .endfor
 external/mit/tomlc99/toml.o: ${.CURDIR}/external/mit/tomlc99/toml.h
-
-all: ${PROG} rc.d/stnsd
 
 .SUFFIXES: .c .o
 
