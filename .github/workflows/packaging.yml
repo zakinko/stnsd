@@ -151,10 +151,15 @@ jobs:
             git clone --depth 1 --single-branch \
               https://git.FreeBSD.org/ports.git /usr/ports
 
-            echo "== dropping the port in =="
-            mkdir -p /usr/ports/security/stnsd
-            cp -R "$WORK"/overlay-ports/security/stnsd/. /usr/ports/security/stnsd/
-            cd /usr/ports/security/stnsd
+            echo "== dropping the category in =="
+            # zakinko is not one of the categories bsd.port.mk knows, and
+            # check-sanity rejects a CATEGORIES entry it cannot find in that
+            # list.  Adding it is what an administrator does to use the overlay.
+            echo 'VALID_CATEGORIES+=zakinko' >> /etc/make.conf
+            mkdir -p /usr/ports/zakinko
+            (cd "$WORK"/overlay-ports && tar --exclude .git -cf - .) |
+              (cd /usr/ports/zakinko && tar -xf -)
+            cd /usr/ports/zakinko/stnsd
 
             echo "== stage and check the packing list =="
             make stage

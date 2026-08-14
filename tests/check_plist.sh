@@ -37,7 +37,7 @@ NetBSD)
 	;;
 FreeBSD|DragonFly|MidnightBSD)
 	PREFIX=/usr/local
-	PLIST=$PORTS_OVERLAY/security/stnsd/pkg-plist
+	PLIST=$PORTS_OVERLAY/stnsd/pkg-plist
 	OVERLAY_URL=https://github.com/zakinko/ports-zakinko.git
 	OVERLAY_DIR=$PORTS_OVERLAY
 	EXTRA=""

@@ -98,9 +98,9 @@ git clone https://github.com/zakinko/pkgsrc-zakinko.git /usr/pkgsrc/zakinko
 cd /usr/pkgsrc/zakinko/stnsd && make install
 
 # FreeBSD or DragonFly, ports
-git clone https://github.com/zakinko/ports-zakinko.git /usr/ports-zakinko
-cp -R /usr/ports-zakinko/security/stnsd /usr/ports/security/stnsd
-cd /usr/ports/security/stnsd && make install
+git clone https://github.com/zakinko/ports-zakinko.git /usr/ports/zakinko
+echo 'VALID_CATEGORIES+=zakinko' >> /etc/make.conf
+cd /usr/ports/zakinko/stnsd && make install
 ```
 
 That gives you `sbin/stnsd`, an rc.d script and a sample configuration
