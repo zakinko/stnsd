@@ -23,7 +23,7 @@
 
 #include "toml.h"
 
-#define STNSD_VERSION "0.2.0"
+#define STNSD_VERSION "0.3.0"
 #define STNSD_SERVER "stnsd/" STNSD_VERSION
 
 #ifndef STNSD_CONFDIR
