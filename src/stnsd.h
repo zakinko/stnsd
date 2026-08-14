@@ -56,6 +56,15 @@
 #define STNSD_GITHUB_FETCHER "fetch -q -o -"
 #endif
 #endif
+/*
+ * How often to ask github again.  Zero means only when the configuration is
+ * read, which leaves a key removed upstream being served until somebody sends
+ * a HUP; an hour bounds that without asking the administrator to remember a
+ * cron entry.
+ */
+#ifndef STNSD_GITHUB_REFRESH
+#define STNSD_GITHUB_REFRESH 3600
+#endif
 #ifndef STNSD_GITHUB_CACHE
 #ifdef __NetBSD__
 #define STNSD_GITHUB_CACHE "/var/db/stnsd/github"
@@ -129,6 +138,15 @@ typedef struct {
 
 	/* Users only.  A group leaves these NULL and group_id 0. */
 	char *github;		/* the login whose published keys are also theirs */
+	/*
+	 * The keys as the file gave them, kept aside once github's are mixed
+	 * in.  Every refresh rebuilds the list from these, so a key removed
+	 * from the account upstream is really gone rather than remembered from
+	 * the last time round.
+	 */
+	char **own_values;
+	size_t nown;
+	int own_present;
 	char *password;
 	char *directory;
 	char *shell;
@@ -179,6 +197,7 @@ typedef struct {
 	char *github_url;	/* a template with one %s, the login */
 	char *github_fetcher;	/* a command; the URL is appended to it */
 	char *github_cache;	/* directory, or NULL to keep no copy */
+	int github_refresh;	/* seconds between fetches, 0 for only on reload */
 
 	stnsd_entries_t users;
 	stnsd_entries_t groups;

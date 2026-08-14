@@ -213,12 +213,15 @@ keys   = ["ssh-ed25519 AAAA... a key kept here"]
 ```
 
 Doing it here rather than in each client is arithmetic: one machine fetches
-when the configuration is read, instead of every machine fetching at every
-login. Three things about how:
+hourly, instead of every machine fetching at every login. Four things about
+how:
 
-- **The fetch happens at start up and on `HUP`, never while serving.** A
-  directory that must reach github before it can answer is a directory that
-  stops working when github does.
+- **The fetch happens at start up, on `HUP`, and every `refresh` seconds —
+  never while serving.** A directory that must reach github before it can
+  answer is a directory that stops working when github does. The interval
+  exists because without it a key revoked upstream is served until somebody
+  remembers to send a `HUP`, and nobody does; `refresh = 0` restores that if
+  you would rather drive it from cron.
 - **The fetching is done by the system's own client** — `ftp(1)` on NetBSD,
   `fetch(1)` on FreeBSD and DragonFly — rather than by an HTTPS client of ours.
   Both verify certificates unless told otherwise, against whatever authorities
@@ -226,23 +229,30 @@ login. Three things about how:
   administrator already made it. It also means NetBSD needs a certificate
   bundle installed (`security/mozilla-rootcerts`) for the fetch to verify, and
   a fetch that cannot verify fails rather than proceeding.
-- **What was fetched is cached, and the cache is used when a fetch fails.**
-  Github being unreachable means the keys are old, not gone.
+- **A failure never costs anybody a key.** If the fetch fails, the keys already
+  being served are kept; across a restart, the cached copy on disk is used
+  instead. Github being unreachable means the keys are old, not gone.
+- **A success is believed, including when it is empty.** Removing the last key
+  from an account removes it here too, and clears the cached copy, so that the
+  next outage cannot bring it back. Keys written in the file are untouched by
+  any of this — they are what is left when github has nothing to add.
 
 ```toml
 [github]
 #url     = "https://github.com/%s.keys"   # %s is the login; change it for GHE
 #fetcher = "ftp -o -"                      # the URL is appended to this
 #cache   = "/var/db/stnsd/github"
+#refresh = 3600                            # seconds; 0 for start up and HUP only
 ```
 
 Anything the fetcher returns that does not begin like an SSH key is discarded
-and reported — an error page is not going into anybody's `authorized_keys`.
+and reported — an error page is not going into anybody's `authorized_keys`,
+and a page served with a 200 does not count as "this account has no keys".
 
 ## Testing
 
 ```sh
-make test       # 132 unit checks, then 65 against the running daemon
+make test       # 132 unit checks, then 78 against the running daemon
 make compat     # 44 answers compared against upstream STNS itself
 make asan       # the unit tests under AddressSanitizer and UBSan
 make external   # the bundled tomlc99 still matches external/MANIFEST

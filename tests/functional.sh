@@ -402,6 +402,84 @@ lacks "an error page is not mistaken for a key" "html" \
 contains "and it is reported" "nothing that looks like a key" "$(cat "$WORK/stnsd.log")"
 
 echo
+echo "== github keys: refreshing, revoking, and outages =="
+# refresh = 1 so the test does not have to wait an hour to see the second
+# fetch.  The fetcher is still cat: nothing here reaches the network.
+rm -rf "$WORK/gh2"; mkdir -p "$WORK/gh2/keys" "$WORK/gh2/cache"
+printf 'ssh-ed25519 AAAAGH1 zakinko\n' > "$WORK/gh2/keys/zakinko"
+cat > "$WORK/gh2.conf" <<GH2EOF
+port = $PORT
+
+[github]
+url     = "$WORK/gh2/keys/%s"
+fetcher = "cat"
+cache   = "$WORK/gh2/cache"
+refresh = 1
+
+[users.alice]
+id = 1001
+group_id = 1001
+github = "zakinko"
+keys = ["ssh-ed25519 AAAAOWN alice"]
+GH2EOF
+
+contains "-t says how often github is asked" "every 1s" \
+	"$("$STNSD" -t -c "$WORK/gh2.conf" 2>&1 || true)"
+
+keys_of() {
+	curl -s "http://127.0.0.1:$PORT/v1/users?name=alice" |
+		grep -o 'AAAA[A-Z0-9]*' | sort | tr '\n' ' '
+}
+
+stop_server
+"$STNSD" -f -c "$WORK/gh2.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+expect "at start, github's key and the file's" "AAAAGH1 AAAAOWN " "$(keys_of)"
+
+# A key published upstream arrives without anybody sending a HUP.
+printf 'ssh-ed25519 AAAAGH1 zakinko\nssh-rsa AAAAGH2 zakinko\n' > "$WORK/gh2/keys/zakinko"
+sleep 3
+expect "a key added upstream appears on its own" "AAAAGH1 AAAAGH2 AAAAOWN " "$(keys_of)"
+
+# Revoking the last key is an answer, not a failure: it has to take effect,
+# and it has to clear the cache so that a later outage cannot bring it back.
+: > "$WORK/gh2/keys/zakinko"
+sleep 3
+expect "revoking every key upstream takes effect" "AAAAOWN " "$(keys_of)"
+denies "and the cached copy is gone" test -f "$WORK/gh2/cache/zakinko"
+
+# The dangerous case: github becomes unreachable just after a revocation.
+# Nothing may come back from the dead.
+rm -f "$WORK/gh2/keys/zakinko"
+sleep 3
+expect "a failed fetch does not resurrect a revoked key" "AAAAOWN " "$(keys_of)"
+
+# And the other direction: keys that were being served survive an outage.
+printf 'ssh-ed25519 AAAAGH1 zakinko\n' > "$WORK/gh2/keys/zakinko"
+sleep 3
+expect "a key published again comes back" "AAAAGH1 AAAAOWN " "$(keys_of)"
+rm -f "$WORK/gh2/keys/zakinko"
+sleep 3
+expect "an outage keeps what was already being served" "AAAAGH1 AAAAOWN " "$(keys_of)"
+contains "and says which it is doing" "keeping the keys we already had" "$(cat "$WORK/stnsd.log")"
+
+# A restart during the outage: the process forgets, the disk does not.
+stop_server
+"$STNSD" -f -c "$WORK/gh2.conf" -l "127.0.0.1:$PORT" > "$WORK/stnsd.log" 2>&1 &
+server_pid=$!
+wait_for_port
+expect "a restart during an outage falls back to the cache" "AAAAGH1 AAAAOWN " "$(keys_of)"
+contains "and says that is what it did" "using the cached keys" "$(cat "$WORK/stnsd.log")"
+
+# Nobody refers to this login any more, so its keys should not sit there.
+touch "$WORK/gh2/cache/someone-else"
+printf 'ssh-ed25519 AAAAGH1 zakinko\n' > "$WORK/gh2/keys/zakinko"
+sleep 3
+denies "a cached login nobody uses is swept away" test -f "$WORK/gh2/cache/someone-else"
+succeeds "and one still in use is kept" test -f "$WORK/gh2/cache/zakinko"
+
+echo
 echo "== TLS =="
 sed "s/^port = .*/port = $PORT/" "$SRCDIR/tests/stns.conf" > "$WORK/probe.conf"
 printf '\n[tls]\ncert = "/nonexistent.pem"\nkey = "/nonexistent-key.pem"\n' >> "$WORK/probe.conf"

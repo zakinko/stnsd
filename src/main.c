@@ -22,6 +22,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <syslog.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "stnsd.h"
@@ -253,6 +254,7 @@ main(int argc, char *argv[])
 	const char *config = STNSD_CONFIG_FILE;
 	const char *listen_arg = NULL;
 	const char *pidfile = NULL;
+	time_t last_github;
 	int fds[MAX_LISTEN];
 	int nfds, i, ch;
 	int foreground = 0, testonly = 0;
@@ -307,12 +309,25 @@ main(int argc, char *argv[])
 	 * never while answering a request.
 	 */
 	(void)stnsd_github_resolve(&conf);
+	last_github = time(NULL);
 	if (testonly) {
 		(void)printf("%s: %zu users, %zu groups, port %d, %s", config, conf.users.n, conf.groups.n,
 		    conf.port, conf.tls_ctx != NULL ? (conf.tls_ca != NULL ? "TLS with client certificates" : "TLS")
 		    : "no TLS");
 		if (conf.nallow > 0)
 			(void)printf(", %zu allow_ips %s", conf.nallow, conf.nallow == 1 ? "entry" : "entries");
+		{
+			size_t gh = 0, k;
+
+			for (k = 0; k < conf.users.n; k++) {
+				if (conf.users.v[k].github != NULL)
+					gh++;
+			}
+			if (gh > 0 && conf.github_refresh > 0)
+				(void)printf(", %zu from github every %ds", gh, conf.github_refresh);
+			else if (gh > 0)
+				(void)printf(", %zu from github on reload only", gh);
+		}
 		if (conf.use_server_starter)
 			(void)printf(", sockets from the supervisor");
 		(void)printf("\n");
@@ -388,12 +403,24 @@ main(int argc, char *argv[])
 				    errbuf);
 			} else {
 				(void)stnsd_github_resolve(&fresh);
+				last_github = time(NULL);
 				stnsd_tls_teardown(&conf);
 				stnsd_config_free(&conf);
 				conf = fresh;
 				stnsd_log(LOG_INFO, "stnsd: reloaded %s, %zu users, %zu groups", conf.path,
 				    conf.users.n, conf.groups.n);
 			}
+		}
+
+		/*
+		 * Ask github again from time to time.  Without this a key
+		 * revoked upstream is served until somebody sends a HUP, and
+		 * nobody remembers to.  It happens here, between connections,
+		 * and never while answering one.
+		 */
+		if (conf.github_refresh > 0 && time(NULL) - last_github >= conf.github_refresh) {
+			(void)stnsd_github_resolve(&conf);
+			last_github = time(NULL);
 		}
 
 		for (i = 0; i < nfds; i++) {

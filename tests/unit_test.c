@@ -574,6 +574,24 @@ test_unsupported(void)
 	ok(!load("[github]\ntoken = \"ghp_x\"\n", &c, err, sizeof(err)),
 	    "an unknown key in [github] is refused");
 
+	/*
+	 * refresh is what keeps a revoked key from being served for a week, so
+	 * an hour is the default rather than "never" -- and 0 has to stay
+	 * available for whoever would rather drive it from cron.
+	 */
+	ok(load("[users.a]\nid = 1\ngithub = \"zakinko\"\n", &c, err, sizeof(err)) &&
+	    c.github_refresh == STNSD_GITHUB_REFRESH, "github is asked again every hour by default");
+	stnsd_config_free(&c);
+	ok(load("[github]\nrefresh = 300\n[users.a]\nid = 1\n", &c, err, sizeof(err)) &&
+	    c.github_refresh == 300, "refresh may be set to something else");
+	stnsd_config_free(&c);
+	ok(load("[github]\nrefresh = 0\n[users.a]\nid = 1\n", &c, err, sizeof(err)) &&
+	    c.github_refresh == 0, "and to 0, meaning only on start up and HUP");
+	stnsd_config_free(&c);
+	ok(!load("[github]\nrefresh = -1\n", &c, err, sizeof(err)),
+	    "a negative refresh is refused rather than rounded to something");
+	contains_str(err, "refresh", "naming the key it could not accept");
+
 	ok(load("allow_ips = [\"10.0.0.0/8\", \"::1\"]\n[users.a]\nid = 1\n", &c, err, sizeof(err)) &&
 	    c.nallow == 2, "allow_ips loads");
 	stnsd_config_free(&c);

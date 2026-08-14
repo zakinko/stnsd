@@ -39,16 +39,22 @@ port = 1104
 #user = "stns"
 #password = "secret"
 
-# Keys published on github, fetched when this file is read and never while
-# serving a request.  The fetcher is the system's own client -- ftp(1) here --
-# so that its idea of which certificates to trust is the one that applies; on
-# NetBSD that means security/mozilla-rootcerts has to be installed.  What was
-# fetched is cached, and the cache is used when a fetch fails, so github being
-# unreachable makes the keys old rather than absent.
+# Keys published on github, fetched when this file is read, on HUP, and every
+# refresh seconds -- never while serving a request.  The fetcher is the system's
+# own client -- ftp(1) here -- so that its idea of which certificates to trust
+# is the one that applies; on NetBSD that means security/mozilla-rootcerts has
+# to be installed.
+#
+# A fetch that fails keeps the keys already being served, falling back to the
+# cache across a restart, so github being unreachable makes the keys old rather
+# than absent.  A fetch that succeeds is believed even when it is empty: that is
+# what revoking the last key looks like, and it has to take effect.  Keys
+# written below are unaffected either way.
 #[github]
 #url     = "https://github.com/%s.keys"
 #fetcher = "ftp -o -"
 #cache   = "/var/db/stnsd/github"
+#refresh = 3600
 
 # TLS.  cert and key serve HTTPS; adding ca additionally requires the client to
 # present a certificate signed by it, which is worth more than a token here --

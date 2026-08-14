@@ -274,6 +274,7 @@ free_entry(stnsd_entry_t *e)
 {
 	free(e->name);
 	free(e->github);
+	stnsd_strings_free(e->own_values, e->nown);
 	free(e->password);
 	free(e->directory);
 	free(e->shell);
@@ -386,7 +387,7 @@ free_entries(stnsd_entries_t *e)
 static const char *const basic_keys[] = { "user", "password", NULL };
 static const char *const token_keys[] = { "tokens", NULL };
 static const char *const tls_keys[] = { "cert", "key", "ca", NULL };
-static const char *const github_keys[] = { "url", "fetcher", "cache", NULL };
+static const char *const github_keys[] = { "url", "fetcher", "cache", "refresh", NULL };
 
 /*
  * Read the whole file.  On failure errbuf says what was wrong and nothing is
@@ -589,6 +590,13 @@ load_file(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen, int de
 		    conf_str(tab, "fetcher", &c->github_fetcher, errbuf, errlen, "[github] ") != STNSD_OK ||
 		    conf_str(tab, "cache", &c->github_cache, errbuf, errlen, "[github] ") != STNSD_OK)
 			goto out_toml;
+		if (conf_int(tab, "refresh", &c->github_refresh, STNSD_GITHUB_REFRESH, errbuf, errlen,
+		    "[github] ") != STNSD_OK)
+			goto out_toml;
+		if (c->github_refresh < 0) {
+			snprintf(errbuf, errlen, "[github] refresh cannot be negative");
+			goto out_toml;
+		}
 		if (c->github_url != NULL && strstr(c->github_url, "%s") == NULL) {
 			snprintf(errbuf, errlen, "[github] url needs a %%s, which is where the login goes");
 			goto out_toml;
@@ -638,6 +646,9 @@ set_github_defaults(stnsd_conf_t *c, char *errbuf, size_t errlen)
 		goto nomem;
 	if (c->github_cache == NULL && (c->github_cache = dup_str(STNSD_GITHUB_CACHE)) == NULL)
 		goto nomem;
+	/* Negative still means "no [github] table said anything about it". */
+	if (c->github_refresh < 0)
+		c->github_refresh = STNSD_GITHUB_REFRESH;
 	return STNSD_OK;
 nomem:
 	snprintf(errbuf, errlen, "out of memory");
@@ -655,6 +666,7 @@ int
 stnsd_config_load(const char *path, stnsd_conf_t *c, char *errbuf, size_t errlen)
 {
 	memset(c, 0, sizeof(*c));
+	c->github_refresh = -1;		/* unset; set_github_defaults decides */
 	if ((c->path = dup_str(path)) == NULL) {
 		snprintf(errbuf, errlen, "out of memory");
 		return STNSD_NG;

@@ -7,14 +7,17 @@
  *
  * A user with github = "login" is given the keys from that account as well as
  * any written out in the file.  The point of doing it here rather than in each
- * client is arithmetic: one machine fetches on a reload, instead of every
- * machine fetching at every login.
+ * client is arithmetic: one machine fetches hourly, instead of every machine
+ * fetching at every login.
  *
  * Three decisions worth knowing about.
  *
- * The fetch happens when the configuration is read -- at start up and on HUP
- * -- and never while serving a request.  A directory that has to reach github
- * before it can answer is a directory that stops working when github does.
+ * The fetch happens when the configuration is read -- at start up and on HUP --
+ * and then every github_refresh seconds, never while serving a request.  A
+ * directory that has to reach github before it can answer is a directory that
+ * stops working when github does.  The interval is there because otherwise a
+ * key revoked upstream is served until somebody thinks to send a HUP, and the
+ * list this file builds is only as good as the last time it was built.
  *
  * The fetching itself is done by the system's own client, ftp(1) on NetBSD and
  * fetch(1) on FreeBSD, rather than by an HTTPS client of our own.  That keeps
@@ -22,14 +25,23 @@
  * verify certificates by default, against whatever certificate authorities the
  * machine has been given, and no second opinion of ours can quietly disagree.
  *
- * What was fetched is cached on disk, and the cache is used when a fetch
- * fails.  Github being unreachable then means the keys are old rather than
- * gone, which is the difference between a slightly stale directory and a
- * fleet that cannot log in.
+ * What was fetched is kept in two places, and both are read when a fetch
+ * fails: in this process, so that a reload during an outage does not lose what
+ * the previous generation was serving, and on disk, so that a restart does not
+ * either.  Github being unreachable then means the keys are old rather than
+ * gone, which is the difference between a slightly stale directory and a fleet
+ * that cannot log in.
+ *
+ * The rule the whole file is arranged around: a fetch that fails never takes a
+ * key away, and a fetch that succeeds is believed completely -- including when
+ * it says there are no keys at all, which is what revoking the last one looks
+ * like.  Confusing "github is down" with "the user removed their key" in
+ * either direction is the way to get this wrong.
  */
 #include <sys/stat.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -38,6 +50,59 @@
 
 /* Keys are not enormous, and a reply that is is not one. */
 #define MAX_KEYS_BYTES (256 * 1024)
+
+/*
+ * The last body github gave us for each login, kept for as long as the process
+ * lives.  A reload builds a fresh configuration and re-fetches; when that
+ * fetch fails this is what the new configuration falls back to, so a HUP
+ * during an outage cannot lose keys the old one was already serving.
+ */
+static struct {
+	char *login;
+	char *text;		/* NULL after a login is known to have no keys */
+	int known;		/* whether github has answered for it at all */
+} *seen;
+static size_t nseen;
+
+static int
+remember(const char *login, const char *text)
+{
+	size_t i;
+	void *grown;
+
+	for (i = 0; i < nseen; i++) {
+		if (strcmp(seen[i].login, login) == 0) {
+			free(seen[i].text);
+			seen[i].text = (text != NULL) ? strdup(text) : NULL;
+			seen[i].known = 1;
+			return STNSD_OK;
+		}
+	}
+	if ((grown = realloc(seen, (nseen + 1) * sizeof(*seen))) == NULL)
+		return STNSD_NG;
+	seen = grown;
+	if ((seen[nseen].login = strdup(login)) == NULL)
+		return STNSD_NG;
+	seen[nseen].text = (text != NULL) ? strdup(text) : NULL;
+	seen[nseen].known = 1;
+	nseen++;
+	return STNSD_OK;
+}
+
+/* Returns 1 if github has answered for this login before, 0 if never. */
+static int
+recall(const char *login, const char **text)
+{
+	size_t i;
+
+	for (i = 0; i < nseen; i++) {
+		if (strcmp(seen[i].login, login) == 0) {
+			*text = seen[i].text;
+			return seen[i].known;
+		}
+	}
+	return 0;
+}
 
 /*
  * A github login is letters, digits and hyphens.  This is checked before the
@@ -170,13 +235,14 @@ write_cache(const stnsd_conf_t *c, const char *login, const char *text)
  * then falls back to the cache rather than replacing good keys with nothing.
  */
 static char *
-fetch(const stnsd_conf_t *c, const char *login)
+fetch(const stnsd_conf_t *c, const char *login, int *answered)
 {
 	char url[1024], command[2048];
 	char *text;
 	FILE *fp;
 	int status;
 
+	*answered = 0;
 	(void)snprintf(url, sizeof(url), c->github_url, login);
 	(void)snprintf(command, sizeof(command), "%s %s", c->github_fetcher, url);
 
@@ -191,21 +257,102 @@ fetch(const stnsd_conf_t *c, const char *login)
 		free(text);
 		return NULL;
 	}
+	/*
+	 * An answer, which may legitimately be an empty one: the account has no
+	 * keys, or its last one has just been revoked.  The caller has to know
+	 * the difference between this and a fetch that never happened.
+	 */
+	*answered = 1;
 	return text;
+}
+
+/* Nothing but blank lines: an answer, and the answer is "no keys". */
+static int
+is_blank(const char *text)
+{
+	if (text == NULL)
+		return 1;
+	while (*text != '\0') {
+		if (!isspace((unsigned char)*text))
+			return 0;
+		text++;
+	}
+	return 1;
+}
+
+static void
+forget_cache(const stnsd_conf_t *c, const char *login)
+{
+	char *path;
+
+	if ((path = cache_path(c, login)) == NULL)
+		return;
+	(void)unlink(path);
+	free(path);
+}
+
+/*
+ * Remove cached bodies for logins nobody refers to any more.  A login changed
+ * in the configuration, or a user deleted from it, would otherwise leave
+ * somebody's public keys sitting in the directory for ever with nothing to
+ * clear them.
+ */
+static void
+sweep_cache(const stnsd_conf_t *c)
+{
+	struct dirent *de;
+	DIR *dir;
+	size_t i;
+
+	if (c->github_cache == NULL || (dir = opendir(c->github_cache)) == NULL)
+		return;
+	while ((de = readdir(dir)) != NULL) {
+		int wanted = 0;
+
+		if (de->d_name[0] == '.' || !valid_login(de->d_name))
+			continue;
+		for (i = 0; i < c->users.n && !wanted; i++) {
+			if (c->users.v[i].github != NULL && strcmp(c->users.v[i].github, de->d_name) == 0)
+				wanted = 1;
+		}
+		if (!wanted) {
+			forget_cache(c, de->d_name);
+			stnsd_log(LOG_INFO, "stnsd: github: forgot the cached keys for %s, which nobody uses",
+			    de->d_name);
+		}
+	}
+	(void)closedir(dir);
 }
 
 /*
  * Give every user with a github login their published keys as well.
  *
- * Called after the configuration is read and before anything is served, so a
- * request never waits for github.  Returns STNSD_OK even when a fetch failed:
- * the keys written in the file are still good, and refusing to start over a
- * third party being down would be its own kind of outage.
+ * Called after the configuration is read, and again every refresh interval,
+ * always before anything is served rather than while answering.  The list is
+ * rebuilt each time from the keys the file declared, so a key revoked upstream
+ * does not survive in a list it was merged into an hour ago.
+ *
+ * Returns STNSD_OK even when a fetch failed: the keys written in the file are
+ * still good, and refusing to start over a third party being down would be its
+ * own kind of outage.
  */
 int
 stnsd_github_resolve(stnsd_conf_t *c)
 {
 	size_t i, j;
+	int wanted = 0;
+
+	for (i = 0; i < c->users.n; i++) {
+		if (c->users.v[i].github != NULL)
+			wanted = 1;
+	}
+	/*
+	 * Nobody named a login, so there is nothing to fetch and no reason to
+	 * make a directory under /var -- least of all during "stnsd -t", which
+	 * is run to read a configuration and should not leave anything behind.
+	 */
+	if (!wanted)
+		return STNSD_OK;
 
 	if (c->github_cache != NULL && mkdir(c->github_cache, 0700) != 0 && errno != EEXIST) {
 		stnsd_log(LOG_WARNING, "stnsd: github: no cache in %s: %s", c->github_cache, strerror(errno));
@@ -215,10 +362,11 @@ stnsd_github_resolve(stnsd_conf_t *c)
 
 	for (i = 0; i < c->users.n; i++) {
 		stnsd_entry_t *u = &c->users.v[i];
+		const char *remembered;
 		char **keys = NULL;
 		size_t nkeys = 0;
 		char *text;
-		int fresh = 1;
+		int answered, fresh = 0;
 
 		if (u->github == NULL)
 			continue;
@@ -228,36 +376,83 @@ stnsd_github_resolve(stnsd_conf_t *c)
 			continue;
 		}
 
-		if ((text = fetch(c, u->github)) == NULL) {
-			text = read_cache(c, u->github);
-			fresh = 0;
-			if (text != NULL)
-				stnsd_log(LOG_WARNING, "stnsd: github: using the cached keys for %s", u->github);
-			else
-				stnsd_log(LOG_ERR, "stnsd: github: no keys for %s and nothing cached", u->github);
+		/*
+		 * Keep what the file said the first time through.  Every later
+		 * pass starts from it, so this is a replacement rather than an
+		 * accumulation.
+		 */
+		if (u->own_values == NULL && u->nown == 0) {
+			for (j = 0; j < u->nvalues; j++)
+				(void)stnsd_strings_add(&u->own_values, &u->nown, u->values[j]);
+			u->own_present = u->values_present;
 		}
-		if (text == NULL)
-			continue;
 
-		collect_keys(text, &keys, &nkeys);
-		if (nkeys == 0) {
-			stnsd_log(LOG_WARNING, "stnsd: github: nothing that looks like a key for %s", u->github);
+		text = fetch(c, u->github, &answered);
+		if (answered && is_blank(text)) {
+			/*
+			 * Github answered, and the answer is that there are no
+			 * keys.  That is what revoking the last one looks like,
+			 * so it has to be believed and remembered -- otherwise
+			 * the next failed fetch resurrects them from the cache.
+			 */
 			free(text);
-			stnsd_strings_free(keys, nkeys);
-			continue;
+			(void)remember(u->github, NULL);
+			forget_cache(c, u->github);
+			stnsd_log(LOG_INFO, "stnsd: github: %s publishes no keys", u->github);
+			text = NULL;
+			answered = 1;
+			fresh = 1;
+		} else if (answered) {
+			fresh = 1;
+		} else {
+			/* No answer.  What we were serving, then what survived a restart. */
+			if (recall(u->github, &remembered)) {
+				text = (remembered != NULL) ? strdup(remembered) : NULL;
+				answered = 1;
+				stnsd_log(LOG_WARNING, "stnsd: github: keeping the keys we already had for %s",
+				    u->github);
+			} else if ((text = read_cache(c, u->github)) != NULL) {
+				answered = 1;
+				stnsd_log(LOG_WARNING, "stnsd: github: using the cached keys for %s", u->github);
+			} else {
+				stnsd_log(LOG_ERR, "stnsd: github: no keys for %s and nothing remembered",
+				    u->github);
+			}
 		}
-		if (fresh)
-			write_cache(c, u->github, text);
-		free(text);
 
-		/* The union of what the file says and what github says. */
-		for (j = 0; j < u->nvalues; j++)
-			(void)stnsd_strings_add(&keys, &nkeys, u->values[j]);
-		stnsd_strings_uniq_sort(keys, &nkeys);
+		if (text != NULL) {
+			collect_keys(text, &keys, &nkeys);
+			if (nkeys == 0) {
+				/*
+				 * An answer with nothing key-shaped in it is not
+				 * an answer: an error page served with a 200, a
+				 * proxy's apology.  Treat it as a failure so the
+				 * cache is left alone.
+				 */
+				stnsd_log(LOG_WARNING, "stnsd: github: nothing that looks like a key for %s",
+				    u->github);
+				stnsd_strings_free(keys, nkeys);
+				keys = NULL;
+				nkeys = 0;
+				fresh = 0;
+			} else if (fresh) {
+				(void)remember(u->github, text);
+				write_cache(c, u->github, text);
+			}
+			free(text);
+		}
+
+		/* What the file said, plus whatever github has to add. */
+		for (j = 0; j < u->nown; j++)
+			(void)stnsd_strings_add(&keys, &nkeys, u->own_values[j]);
+		if (nkeys > 0)
+			stnsd_strings_uniq_sort(keys, &nkeys);
 		stnsd_strings_free(u->values, u->nvalues);
 		u->values = keys;
 		u->nvalues = nkeys;
-		u->values_present = 1;
+		u->values_present = (nkeys > 0) ? 1 : u->own_present;
 	}
+
+	sweep_cache(c);
 	return STNSD_OK;
 }
