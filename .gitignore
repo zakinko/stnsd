@@ -2,6 +2,7 @@
 /stnsd
 /unit_test
 /unit_test-asan
+/starter
 /rc.d/stnsd
 *.o
 *.core
